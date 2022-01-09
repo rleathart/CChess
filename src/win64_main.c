@@ -8,6 +8,14 @@
 #include <windowsx.h>
 #include <gl/gl.h>
 
+void Win64WriteToStdOut(char* Buffer)
+{
+  u32 BytesWritten = 0;
+  u32 BytesToWrite = StringLength(Buffer);
+  WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), Buffer, BytesToWrite, &BytesWritten, 0);
+  Assert(BytesWritten == BytesToWrite);
+}
+
 file_read_result Win64ReadEntireFile(char* Filename)
 {
   file_read_result Result = {0};
@@ -97,22 +105,6 @@ LRESULT MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LPar
       Running = 0;
     } break;
 
-    case WM_LBUTTONDOWN:
-    {
-      MouseDown = 1;
-    } break;
-
-    case WM_LBUTTONUP:
-    {
-      MouseDown = 0;
-    } break;
-
-    case WM_MOUSEMOVE:
-    {
-      Mouse.X = GET_X_LPARAM(LParam);
-      Mouse.Y = GET_Y_LPARAM(LParam);
-    } break;
-
     case WM_SIZE:
     {
       RECT ClientRect;
@@ -134,6 +126,7 @@ LRESULT MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LPar
 int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int CommandShow)
 {
   Platform.ReadEntireFile = Win64ReadEntireFile;
+  Platform.StdOut = Win64WriteToStdOut;
 
   WNDCLASS WindowClass = {0};
   WindowClass.style = CS_VREDRAW|CS_HREDRAW|CS_OWNDC;
@@ -159,7 +152,7 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
   // NOTE(robin): Read our piece bitmaps and upload them to the GPU
   for (u32 Piece = NONE; Piece < CHESS_PIECE_COUNT; Piece++)
   {
-    PieceBitmap[Piece] = ReadBitmap((char*)PieceToAsset[Piece]);
+    PieceBitmap[Piece] = ReadBitmap((char*)PieceAsset[Piece]);
     glGenTextures(1, &PieceBitmap[Piece].TextureHandle);
     glBindTexture(GL_TEXTURE_2D, PieceBitmap[Piece].TextureHandle);
 
@@ -172,13 +165,13 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
     VirtualFree(PieceBitmap[Piece].Pixels, 0, MEM_RELEASE);
   }
 
-  for (u32 Tile = 0; Tile < ArrayCount(CurrentBoard); Tile++)
-  {
-    CurrentBoard[Tile] = DefaultBoard[Tile];
-  }
+  CopyArray(CurrentBoard, DefaultBoard);
+  CopyArray(LastBoard, DefaultBoard);
 
   while (Running)
   {
+    Update();
+
     MSG Message;
 
     while (PeekMessage(&Message, 0, 0, 0, PM_REMOVE))
@@ -189,8 +182,18 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
       {
         case WM_MOUSEMOVE:
         {
-          Mouse.X = GET_X_LPARAM(LParam);
-          Mouse.Y = GET_Y_LPARAM(LParam);
+          Input.Mouse.X = GET_X_LPARAM(LParam);
+          Input.Mouse.Y = GET_Y_LPARAM(LParam);
+        } break;
+
+        case WM_LBUTTONDOWN:
+        {
+          Input.Mouse.LButtonDown = 1;
+        } break;
+
+        case WM_LBUTTONUP:
+        {
+          Input.Mouse.LButtonDown = 0;
         } break;
 
         default:
@@ -201,6 +204,8 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
       }
     }
 
+    // TODO(robin): Create a proper pushbuffer renderer in the program layer
+
     colour ClearColour = {0xFF312EBB};
     glClearColor(ClearColour.R/255.0, ClearColour.G/255.0, ClearColour.B/255.0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -208,6 +213,19 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
     s32 XOffset = 50;
     s32 YOffset = 50;
     s32 TileMargin = 10;
+
+    recti BoardClipRect = {
+      XOffset, YOffset,
+      XOffset + 8 * TileSize, YOffset + 8 * TileSize,
+    };
+
+    // NOTE(robin): Put the staged piece back if we release the mouse outside the board
+    if (MouseLReleasedOutside(BoardClipRect) && MousePiece)
+    {
+      CurrentBoard[LastMouseTileIndex] = MousePiece;
+      MousePiece = NONE;
+    }
+
     for (s32 Y = 0; Y < 8; Y++)
     {
       for (s32 X = 0; X < 8; X++)
@@ -228,15 +246,14 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
 
         piece Piece = CurrentBoard[TileIndex];
 
-        // TODO(robin): Have a clip rect for the board area so nothing happens if we click/release outside the board
-        if (MouseClickedIn(Tile))
+        if (MouseLClickedIn(Tile))
         {
           MousePiece = CurrentBoard[TileIndex];
           CurrentBoard[TileIndex] = NONE;
           LastMouseTileIndex = TileIndex;
         }
 
-        if (MouseReleasedIn(Tile))
+        if (MouseLReleasedIn(Tile))
         {
           if (LegalMove(LastMouseTileIndex, TileIndex))
           {
@@ -278,29 +295,47 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
 
     // NOTE(robin): The texture lags the cursor a bit because the window callback is not called every frame.
 
-#if 1
-    s32 Left = Mouse.X - TileSize/2 + TileMargin;
-    s32 Top = Mouse.Y - TileSize/2 + TileMargin;
-    s32 Right = Mouse.X + TileSize/2 - TileMargin;
-    s32 Bottom = Mouse.Y + TileSize/2 - TileMargin;
-    glBindTexture(GL_TEXTURE_2D, PieceBitmap[MousePiece].TextureHandle);
+    if (MousePiece) // NOTE(robin): We're holding a piece with the mouse
+    {
+      // NOTE(robin): Draw the piece bitmap over the cursor
+      s32 Left = Input.Mouse.X - TileSize/2 + TileMargin;
+      s32 Top = Input.Mouse.Y - TileSize/2 + TileMargin;
+      s32 Right = Input.Mouse.X + TileSize/2 - TileMargin;
+      s32 Bottom = Input.Mouse.Y + TileSize/2 - TileMargin;
 
-    glEnable(GL_TEXTURE_2D);
+      glBindTexture(GL_TEXTURE_2D, PieceBitmap[MousePiece].TextureHandle);
 
-    glBegin(GL_QUADS);
+      glEnable(GL_TEXTURE_2D);
 
-    glColor3f(1, 1, 1);
-    glTexCoord2i(1, 1); glVertex2i(Left, Top);
-    glTexCoord2i(1, 0); glVertex2i(Left, Bottom);
-    glTexCoord2i(0, 0); glVertex2i(Right, Bottom);
-    glTexCoord2i(0, 1); glVertex2i(Right, Top);
+      glBegin(GL_QUADS);
 
-    glEnd();
+      glColor3f(1, 1, 1);
+      glTexCoord2i(1, 1); glVertex2i(Left, Top);
+      glTexCoord2i(1, 0); glVertex2i(Left, Bottom);
+      glTexCoord2i(0, 0); glVertex2i(Right, Bottom);
+      glTexCoord2i(0, 1); glVertex2i(Right, Top);
 
-    glDisable(GL_TEXTURE_2D);
-#endif
+      glEnd();
 
-    LastMouseDown = MouseDown;
+      glDisable(GL_TEXTURE_2D);
+
+      // NOTE(robin): Also highlight the possible moves in red
+      move_array PossibleMoves = GetMoves(LastMouseTileIndex);
+      glColor4f(0.8, 0, 0, 0.5);
+      for (u32 MoveIndex = 0; MoveIndex < PossibleMoves.Count; MoveIndex++)
+      {
+        u8 TileIndex = PossibleMoves.Moves[MoveIndex].To;
+        s32 X = TileIndex & 7;
+        s32 Y = TileIndex >> 3;
+        recti Tile = {
+          XOffset + TileSize * X,
+          YOffset + TileSize * Y,
+          XOffset + TileSize * (X + 1),
+          YOffset + TileSize * (Y + 1),
+        };
+        glRectiv(&Tile.E[0], &Tile.E[2]);
+      }
+    }
 
     SwapBuffers(WindowDC);
   }
