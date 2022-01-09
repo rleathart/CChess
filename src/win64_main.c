@@ -1,55 +1,11 @@
+#include "program.c"
+
+// NOTE(robin): Make sure to include and platform specific headers afer program code
+// so as to cause compile errors if platform code is used in the program layer.
+
 #include <windows.h>
 #include <windowsx.h>
 #include <gl/gl.h>
-
-typedef unsigned char u8;
-typedef unsigned short u16;
-typedef unsigned int u32;
-typedef unsigned long long u64;
-
-typedef signed char s8;
-typedef signed short s16;
-typedef signed int s32;
-typedef signed long long s64;
-
-typedef s32 b32;
-
-typedef struct
-{
-  u32 Size;
-  byte* Data;
-} file_read_result;
-
-#pragma pack(push, 1)
-typedef struct
-{
-  char Type[2];
-  u32  FileSize;
-  u16  Reserved1;
-  u16  Reserved2;
-  u32  DataOffset;
-  u32  HeaderSize;
-} bmp_header;
-
-typedef struct
-{
-  s32 Width;
-  s32 Height;
-} bmp_header_v5;
-#pragma pack(pop)
-
-typedef struct
-{
-  u32 Width;
-  u32 Height;
-
-  byte* Pixels;
-  u32 TextureHandle;
-} loaded_bitmap;
-
-b32 Running = 1;
-u32 MouseX = 0;
-u32 MouseY = 0;
 
 file_read_result Win64ReadEntireFile(char* Filename)
 {
@@ -64,44 +20,24 @@ file_read_result Win64ReadEntireFile(char* Filename)
       u32 bytes_read = 0;
       if (ReadFile(FileHandle, Result.Data, Result.Size, &bytes_read, 0))
       {
-        // Assert(bytes_read = Result.Size);
+        Assert(bytes_read == Result.Size);
       }
-      else // {{{ Error handling
+      else
       {
-        // Failed to read Result
+        Assert(!"Failed to read file");
       }
     }
     else
     {
-      // Failed to get Result Size
+      Assert(!"Failed to get file size");
     }
-    }
-    else
-    {
-      // Failed to open Result...
-    }
-
-  CloseHandle(FileHandle);
-
-  return Result;
-}
-
-loaded_bitmap ReadBitmap(char* Filename)
-{
-  loaded_bitmap Result = {0};
-
-  file_read_result File = Win64ReadEntireFile(Filename);
-
-  bmp_header* Header = (bmp_header*)File.Data;
-
-  if (Header->HeaderSize == 124) // NOTE(robin): BitmapV5Header
+  }
+  else
   {
-    bmp_header_v5* Header5 = (bmp_header_v5*)(Header + 1);
-    Result.Width = Header5->Width;
-    Result.Height = Header5->Height;
+    Assert(!"Failed to open file");
   }
 
-  Result.Pixels = File.Data + Header->DataOffset;
+  CloseHandle(FileHandle);
 
   return Result;
 }
@@ -186,6 +122,8 @@ LRESULT MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LPar
 
 int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int CommandShow)
 {
+  Platform.ReadEntireFile = Win64ReadEntireFile;
+
   WNDCLASS WindowClass = {0};
   WindowClass.style = CS_VREDRAW|CS_HREDRAW|CS_OWNDC;
   WindowClass.lpfnWndProc = MainWindowCallback;
@@ -207,17 +145,24 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
 
   Win64InitOpenGL(Window);
 
-  loaded_bitmap TestBitmap = ReadBitmap("assets/piece_white_bishop.bmp");
+  // NOTE(robin): Read our piece bitmaps and upload them to the GPU
+  for (u32 Piece = NONE + 1; Piece < CHESS_PIECE_COUNT; Piece++)
+  {
+    PieceBitmap[Piece] = ReadBitmap((char*)PieceToAsset[Piece]);
+    glGenTextures(1, &PieceBitmap[Piece].TextureHandle);
+    glBindTexture(GL_TEXTURE_2D, PieceBitmap[Piece].TextureHandle);
 
-  glGenTextures(1, &TestBitmap.TextureHandle);
-  glBindTexture(GL_TEXTURE_2D, TestBitmap.TextureHandle);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, PieceBitmap[Piece].Width, PieceBitmap[Piece].Height,
+        0, GL_BGRA_EXT, GL_UNSIGNED_BYTE, PieceBitmap[Piece].Pixels);
+    glBindTexture(GL_TEXTURE_2D, 0);
+  }
 
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, TestBitmap.Width, TestBitmap.Height,
-      0, GL_BGRA_EXT, GL_UNSIGNED_BYTE, TestBitmap.Pixels);
-
-  glBindTexture(GL_TEXTURE_2D, 0);
+  for (u32 Tile = 0; Tile < ArrayCount(CurrentBoard); Tile++)
+  {
+    CurrentBoard[Tile] = DefaultBoard[Tile];
+  }
 
   while (Running)
   {
@@ -232,46 +177,52 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
     glClearColor(1, 0, 1, 1);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    s32 XOffset = 100;
-    s32 YOffset = 100;
+    s32 XOffset = 50;
+    s32 YOffset = 50;
+    s32 TileMargin = 10;
     for (s32 Y = 0; Y < 8; Y++)
     {
       for (s32 X = 0; X < 8; X++)
       {
-        // TODO(robin): FIX THIS FFS!
-        if (X & 1)
-        {
-          if (Y & 1)
-          {
-            glColor3f(1, 1, 1);
-          }
-          else
-          {
-            glColor3f(0.2,0.2,0.2);
-          }
-        }
-        else
-        {
-          if (Y & 1)
-          {
-            glColor3f(0.2,0.2,0.2);
-          }
-          else
-          {
-            glColor3f(1, 1, 1);
-          }
-        }
+        u32 TileIndex = Y * 8 + X;
 
-        glRectf(XOffset + 80 * X, YOffset + 80 * Y, XOffset + 80 * (X + 1), YOffset + 80 * (Y + 1));
+        // NOTE(robin): Alternate tile colours
+        (TileIndex + (Y & 1)) & 1 ? glColor3f(0.2, 0.2, 0.2) : glColor3f(1, 1, 1);
+
+        s32 TileOrigin[] = {XOffset + TileSize * X, YOffset + TileSize * Y};
+        glRectf(TileOrigin[0], TileOrigin[1], TileOrigin[0] + TileSize, TileOrigin[1] + TileSize);
+
+        chess_piece Piece = CurrentBoard[TileIndex];
+
+        if (Piece)
+        {
+          u32 TextureHandle = PieceBitmap[Piece].TextureHandle;
+          glBindTexture(GL_TEXTURE_2D, TextureHandle);
+          glEnable(GL_TEXTURE_2D);
+          glBegin(GL_QUADS);
+
+          glColor3f(1, 1, 1);
+          glTexCoord2i(1, 1); glVertex2i(TileMargin + TileOrigin[0], TileMargin + TileOrigin[1]);
+          glTexCoord2i(1, 0); glVertex2i(TileMargin + TileOrigin[0], TileOrigin[1] + TileSize - TileMargin);
+          glTexCoord2i(0, 0); glVertex2i(TileOrigin[0] + TileSize - TileMargin, TileOrigin[1] + TileSize - TileMargin);
+          glTexCoord2i(0, 1); glVertex2i(TileOrigin[0] + TileSize - TileMargin, TileMargin + TileOrigin[1]);
+
+          glEnd();
+          glDisable(GL_TEXTURE_2D);
+          glBindTexture(GL_TEXTURE_2D, 0);
+        }
       }
     }
 
-    glBindTexture(GL_TEXTURE_2D, TestBitmap.TextureHandle);
+    // NOTE(robin): The texture lags the cursor a bit because the window callback is not called every frame.
+
+    glBindTexture(GL_TEXTURE_2D, PieceBitmap[KING_B].TextureHandle);
 
     glEnable(GL_TEXTURE_2D);
 
     glBegin(GL_QUADS);
 
+    glColor3f(1, 1, 1);
     glTexCoord2i(1, 1); glVertex2i(MouseX, MouseY);
     glTexCoord2i(1, 0); glVertex2i(MouseX, MouseY + 100);
     glTexCoord2i(0, 0); glVertex2i(MouseX + 100, MouseY + 100);
