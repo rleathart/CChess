@@ -6,6 +6,8 @@ if NOT EXIST build (
 )
 pushd build
 
+:: TODO(robin): Get rid of CRT
+
 set PlatformLibs=kernel32.lib user32.lib gdi32.lib opengl32.lib
 
 set CommonCompilerFlags=%CommonCompilerFlags% -FC -Zi -Od -nologo

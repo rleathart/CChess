@@ -3,6 +3,7 @@
 // NOTE(robin): Make sure to include and platform specific headers afer program code
 // so as to cause compile errors if platform code is used in the program layer.
 
+// TODO(robin): Replace windows and gl headers
 #include <windows.h>
 #include <windowsx.h>
 #include <gl/gl.h>
@@ -96,10 +97,20 @@ LRESULT MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LPar
       Running = 0;
     } break;
 
+    case WM_LBUTTONDOWN:
+    {
+      MouseDown = 1;
+    } break;
+
+    case WM_LBUTTONUP:
+    {
+      MouseDown = 0;
+    } break;
+
     case WM_MOUSEMOVE:
     {
-      MouseX = GET_X_LPARAM(LParam);
-      MouseY = GET_Y_LPARAM(LParam);
+      Mouse.X = GET_X_LPARAM(LParam);
+      Mouse.Y = GET_Y_LPARAM(LParam);
     } break;
 
     case WM_SIZE:
@@ -146,7 +157,7 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
   Win64InitOpenGL(Window);
 
   // NOTE(robin): Read our piece bitmaps and upload them to the GPU
-  for (u32 Piece = NONE + 1; Piece < CHESS_PIECE_COUNT; Piece++)
+  for (u32 Piece = NONE; Piece < CHESS_PIECE_COUNT; Piece++)
   {
     PieceBitmap[Piece] = ReadBitmap((char*)PieceToAsset[Piece]);
     glGenTextures(1, &PieceBitmap[Piece].TextureHandle);
@@ -157,6 +168,8 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, PieceBitmap[Piece].Width, PieceBitmap[Piece].Height,
         0, GL_BGRA_EXT, GL_UNSIGNED_BYTE, PieceBitmap[Piece].Pixels);
     glBindTexture(GL_TEXTURE_2D, 0);
+
+    VirtualFree(PieceBitmap[Piece].Pixels, 0, MEM_RELEASE);
   }
 
   for (u32 Tile = 0; Tile < ArrayCount(CurrentBoard); Tile++)
@@ -170,11 +183,26 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
 
     while (PeekMessage(&Message, 0, 0, 0, PM_REMOVE))
     {
-      TranslateMessage(&Message);
-      DispatchMessage(&Message);
+      LPARAM LParam = Message.lParam;
+
+      switch (Message.message)
+      {
+        case WM_MOUSEMOVE:
+        {
+          Mouse.X = GET_X_LPARAM(LParam);
+          Mouse.Y = GET_Y_LPARAM(LParam);
+        } break;
+
+        default:
+        {
+          TranslateMessage(&Message);
+          DispatchMessage(&Message);
+        };
+      }
     }
 
-    glClearColor(1, 0, 1, 1);
+    colour ClearColour = {0xFF312EBB};
+    glClearColor(ClearColour.R/255.0, ClearColour.G/255.0, ClearColour.B/255.0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
 
     s32 XOffset = 50;
@@ -189,23 +217,57 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
         // NOTE(robin): Alternate tile colours
         (TileIndex + (Y & 1)) & 1 ? glColor3f(0.2, 0.2, 0.2) : glColor3f(1, 1, 1);
 
-        s32 TileOrigin[] = {XOffset + TileSize * X, YOffset + TileSize * Y};
-        glRectf(TileOrigin[0], TileOrigin[1], TileOrigin[0] + TileSize, TileOrigin[1] + TileSize);
+        recti Tile = {
+          XOffset + TileSize * X,
+          YOffset + TileSize * Y,
+          XOffset + TileSize * (X + 1),
+          YOffset + TileSize * (Y + 1),
+        };
 
-        chess_piece Piece = CurrentBoard[TileIndex];
+        glRectiv(&Tile.E[0], &Tile.E[2]);
+
+        piece Piece = CurrentBoard[TileIndex];
+
+        // TODO(robin): Have a clip rect for the board area so nothing happens if we click/release outside the board
+        if (MouseClickedIn(Tile))
+        {
+          MousePiece = CurrentBoard[TileIndex];
+          CurrentBoard[TileIndex] = NONE;
+          LastMouseTileIndex = TileIndex;
+        }
+
+        if (MouseReleasedIn(Tile))
+        {
+          if (LegalMove(LastMouseTileIndex, TileIndex))
+          {
+            CurrentBoard[TileIndex] = MousePiece;
+            MousePiece = NONE;
+          }
+          else
+          {
+            CurrentBoard[LastMouseTileIndex] = MousePiece;
+            MousePiece = NONE;
+          }
+        }
 
         if (Piece)
         {
-          u32 TextureHandle = PieceBitmap[Piece].TextureHandle;
-          glBindTexture(GL_TEXTURE_2D, TextureHandle);
+          recti TileRect = {
+            TileMargin + Tile.Left,
+            TileMargin + Tile.Top,
+            Tile.Right - TileMargin,
+            Tile.Bottom - TileMargin,
+          };
+
+          glBindTexture(GL_TEXTURE_2D, PieceBitmap[Piece].TextureHandle);
           glEnable(GL_TEXTURE_2D);
           glBegin(GL_QUADS);
 
           glColor3f(1, 1, 1);
-          glTexCoord2i(1, 1); glVertex2i(TileMargin + TileOrigin[0], TileMargin + TileOrigin[1]);
-          glTexCoord2i(1, 0); glVertex2i(TileMargin + TileOrigin[0], TileOrigin[1] + TileSize - TileMargin);
-          glTexCoord2i(0, 0); glVertex2i(TileOrigin[0] + TileSize - TileMargin, TileOrigin[1] + TileSize - TileMargin);
-          glTexCoord2i(0, 1); glVertex2i(TileOrigin[0] + TileSize - TileMargin, TileMargin + TileOrigin[1]);
+          glTexCoord2i(1, 1); glVertex2i(TileRect.Left, TileRect.Top);
+          glTexCoord2i(1, 0); glVertex2i(TileRect.Left, TileRect.Bottom);
+          glTexCoord2i(0, 0); glVertex2i(TileRect.Right, TileRect.Bottom);
+          glTexCoord2i(0, 1); glVertex2i(TileRect.Right, TileRect.Top);
 
           glEnd();
           glDisable(GL_TEXTURE_2D);
@@ -216,21 +278,29 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
 
     // NOTE(robin): The texture lags the cursor a bit because the window callback is not called every frame.
 
-    glBindTexture(GL_TEXTURE_2D, PieceBitmap[KING_B].TextureHandle);
+#if 1
+    s32 Left = Mouse.X - TileSize/2 + TileMargin;
+    s32 Top = Mouse.Y - TileSize/2 + TileMargin;
+    s32 Right = Mouse.X + TileSize/2 - TileMargin;
+    s32 Bottom = Mouse.Y + TileSize/2 - TileMargin;
+    glBindTexture(GL_TEXTURE_2D, PieceBitmap[MousePiece].TextureHandle);
 
     glEnable(GL_TEXTURE_2D);
 
     glBegin(GL_QUADS);
 
     glColor3f(1, 1, 1);
-    glTexCoord2i(1, 1); glVertex2i(MouseX, MouseY);
-    glTexCoord2i(1, 0); glVertex2i(MouseX, MouseY + 100);
-    glTexCoord2i(0, 0); glVertex2i(MouseX + 100, MouseY + 100);
-    glTexCoord2i(0, 1); glVertex2i(MouseX + 100, MouseY);
+    glTexCoord2i(1, 1); glVertex2i(Left, Top);
+    glTexCoord2i(1, 0); glVertex2i(Left, Bottom);
+    glTexCoord2i(0, 0); glVertex2i(Right, Bottom);
+    glTexCoord2i(0, 1); glVertex2i(Right, Top);
 
     glEnd();
 
     glDisable(GL_TEXTURE_2D);
+#endif
+
+    LastMouseDown = MouseDown;
 
     SwapBuffers(WindowDC);
   }
