@@ -59,6 +59,19 @@ void Win64ResizeWindow(s32 Width, s32 Height)
   glOrtho(0, Width, Height, 0, 0, -1);
 }
 
+void Win64Dirname(char* OutPath, char* Path)
+{
+  char* OnePastLastSlash = Path;
+  for (char* Scan = Path; *Scan; ++Scan)
+  {
+    if (*Scan == '\\')
+    {
+      OnePastLastSlash = Scan + 1;
+    }
+  }
+  CopyMemory(OutPath, Path, OnePastLastSlash - Path);
+}
+
 void Win64InitOpenGL(HWND Window)
 {
   HDC WindowDC = GetDC(Window);
@@ -125,6 +138,12 @@ LRESULT MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LPar
 
 int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int CommandShow)
 {
+  // NOTE(robin): Find where our executable is so we can specify asset locations relative to the binary
+  char EXEFileName[MAX_PATH] = {0};
+  char EXEDirectory[MAX_PATH] = {0};
+  GetModuleFileNameA(0, EXEFileName, sizeof(EXEFileName));
+  Win64Dirname(EXEDirectory, EXEFileName);
+
   Platform.ReadEntireFile = Win64ReadEntireFile;
   Platform.StdOut = Win64WriteToStdOut;
 
@@ -152,7 +171,7 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
   // NOTE(robin): Read our piece bitmaps and upload them to the GPU
   for (u32 Piece = NONE; Piece < CHESS_PIECE_COUNT; Piece++)
   {
-    PieceBitmap[Piece] = ReadBitmap((char*)PieceAsset[Piece]);
+    PieceBitmap[Piece] = ReadBitmap((char*)CatStrings(EXEDirectory, 2, "../", PieceAsset[Piece]));
     glGenTextures(1, &PieceBitmap[Piece].TextureHandle);
     glBindTexture(GL_TEXTURE_2D, PieceBitmap[Piece].TextureHandle);
 

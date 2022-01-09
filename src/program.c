@@ -8,6 +8,12 @@
 #define local static
 #define internal static
 
+typedef char* va_list;
+#define PtrAlignedSizeOf(Type) ((sizeof(Type) + sizeof(int*) - 1) & ~(sizeof(int*) - 1))
+#define VAStart(ArgPtr, LastNamedArg) (ArgPtr = (va_list)&LastNamedArg + PtrAlignedSizeOf(LastNamedArg))
+#define VAGet(ArgPtr, Type) (*(Type*)((ArgPtr += PtrAlignedSizeOf(Type)) - PtrAlignedSizeOf(Type)))
+#define VAEnd(ArgPtr) (ArgPtr = 0)
+
 typedef unsigned char u8;
 typedef unsigned short u16;
 typedef unsigned int u32;
@@ -194,6 +200,25 @@ inline u64 StringLength(char* String)
   u64 Result = 0;
   while (*String++)
     Result++;
+  return Result;
+}
+
+char* CatStrings(char* Dest, s32 Count, ...)
+{
+  char* Result = Dest;
+
+  va_list VArgs;
+  VAStart(VArgs, Count);
+
+  while (Count--)
+  {
+    char* Source = VAGet(VArgs, char*);
+    while (*Source)
+      *Dest++ = *Source++;
+  }
+
+  *Dest = 0;
+
   return Result;
 }
 
