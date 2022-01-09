@@ -171,7 +171,8 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
   // NOTE(robin): Read our piece bitmaps and upload them to the GPU
   for (u32 Piece = NONE; Piece < CHESS_PIECE_COUNT; Piece++)
   {
-    PieceBitmap[Piece] = ReadBitmap((char*)CatStrings(EXEDirectory, 2, "../", PieceAsset[Piece]));
+    char BitmapPath[MAX_PATH] = {0};
+    PieceBitmap[Piece] = ReadBitmap((char*)CatStrings(BitmapPath, 3, EXEDirectory, "../", PieceAsset[Piece]));
     glGenTextures(1, &PieceBitmap[Piece].TextureHandle);
     glBindTexture(GL_TEXTURE_2D, PieceBitmap[Piece].TextureHandle);
 
