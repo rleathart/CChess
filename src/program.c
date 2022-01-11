@@ -4,6 +4,11 @@
 // TODO(robin): CopyMemory
 #define CopyArray(Dest, Source) for (u64 i = 0; i < ArrayCount(Source); i++) {(Dest)[i] = (Source)[i];}
 
+#define Kilobytes(Value) ((Value)*1024ULL)
+#define Megabytes(Value) (Kilobytes(Value)*1024ULL)
+#define Gigabytes(Value) (Megabytes(Value)*1024ULL)
+#define Terabytes(Value) (Gigabytes(Value)*1024ULL)
+
 #define global static
 #define local static
 #define internal static
@@ -26,8 +31,46 @@ typedef signed long long s64;
 
 typedef u8 byte;
 typedef s32 b32;
+typedef u64 umm;
 
-global const u32 TileSize = 80;
+const u32 TileSize = 80;
+
+enum
+{
+  NONE = 0,
+};
+
+typedef enum
+{
+  PAWN_W = NONE + 1,
+  KING_W,
+  QUEN_W,
+  ROOK_W,
+  BISH_W,
+  NITE_W,
+  PAWN_B,
+  KING_B,
+  QUEN_B,
+  ROOK_B,
+  BISH_B,
+  NITE_B,
+
+  CHESS_PIECE_COUNT,
+} piece;
+
+enum
+{
+  RENDER_LINE,
+  RENDER_RECT,
+  RENDER_BITMAP,
+  RENDER_CLEAR,
+};
+
+enum
+{
+  FLIP_HORIZONTAL = 1 << 0,
+  FLIP_VERTICAL = 1 << 1,
+};
 
 typedef union
 {
@@ -107,10 +150,54 @@ typedef struct
 {
   u32 Width;
   u32 Height;
-
-  byte* Pixels;
   u32 TextureHandle;
+  u32 Transform; /* NOTE(robin): Some bitmaps are stored bottom-up, others top-down, etc.
+                    This allows us to specify how we want to draw the bitmap on screen. */
+  byte* Pixels;
 } loaded_bitmap;
+
+typedef struct
+{
+  u32 Type;
+} render_entry_header;
+
+typedef struct
+{
+  s32 Left;
+  s32 Top;
+  s32 Right;
+  s32 Bottom;
+  colour Colour;
+} render_entry_rect;
+
+typedef struct
+{
+  v2i Point1;
+  v2i Point2;
+  colour Colour;
+} render_entry_line;
+
+typedef struct
+{
+  s32 Left;
+  s32 Top;
+  s32 Right;
+  s32 Bottom;
+  colour Colour;
+  loaded_bitmap* Bitmap;
+} render_entry_bitmap;
+
+typedef struct
+{
+  colour Colour;
+} render_entry_clear;
+
+typedef struct
+{
+  umm Size;
+  umm Used;
+  byte* Buffer;
+} render_group;
 
 typedef struct
 {
@@ -126,39 +213,19 @@ typedef struct
 
 typedef file_read_result (platform_read_entire_file)(char*);
 typedef void (platform_write_to_std_out)(char*);
+typedef void* (platform_allocate_memory)(umm);
 
 typedef struct
 {
   platform_read_entire_file* ReadEntireFile;
   platform_write_to_std_out* StdOut;
+  platform_allocate_memory* AllocateMemory;
 } platform_api;
-
-enum
-{
-  NONE = 0,
-};
-
-typedef enum
-{
-  PAWN_W = NONE + 1,
-  KING_W,
-  QUEN_W,
-  ROOK_W,
-  BISH_W,
-  NITE_W,
-  PAWN_B,
-  KING_B,
-  QUEN_B,
-  ROOK_B,
-  BISH_B,
-  NITE_B,
-
-  CHESS_PIECE_COUNT,
-} piece;
 
 global b32 Running = 1;
 global piece MousePiece;
 global u32 LastMouseTileIndex;
+global render_group* RenderGroup;
 
 global program_input Input;
 global program_input LastInput;
@@ -194,6 +261,98 @@ global s32 EnPassantTileIndex = -1;
 global b32 CanCastle[4] = {1, 1, 1, 1}; // NOTE(robin): BlackQueenSide, WhiteQueenSide, BlackKingSide, WhiteKingSide
 global piece LastBoard[64];
 global piece CurrentBoard[64];
+
+internal void*
+CopyMemory(void* DestInit, void* SourceInit, umm Size)
+{
+  char* Dest = (char*)DestInit;
+  char* Source = (char*)SourceInit;
+  while (Size--) *Dest++ = *Source++;
+
+  return(DestInit);
+}
+
+internal render_group*
+AllocateRenderGroup(umm Size)
+{
+  render_group* Result = Platform.AllocateMemory(sizeof(render_group) + Size);
+  Result->Buffer = (byte*)(Result + 1);
+  Result->Size = Size;
+
+  return Result;
+}
+
+internal void*
+PushRect(render_group* RenderGroup, recti Rect, colour Colour)
+{
+  render_entry_header Header = {RENDER_RECT};
+  render_entry_rect Entry = {Rect.Left, Rect.Top, Rect.Right, Rect.Bottom, Colour};
+
+  Assert(RenderGroup->Used + sizeof(Header) + sizeof(Entry) <= RenderGroup->Size);
+
+  byte* Base = RenderGroup->Buffer + RenderGroup->Used;
+
+  CopyMemory(Base, &Header, sizeof(Header));
+  CopyMemory(Base + sizeof(Header), &Entry, sizeof(Entry));
+
+  RenderGroup->Used += sizeof(Header) + sizeof(Entry);
+
+  return Base;
+}
+
+internal void*
+PushLine(render_group* RenderGroup, v2i Point1, v2i Point2, colour Colour)
+{
+  render_entry_header Header = {RENDER_LINE};
+  render_entry_line Entry = {Point1, Point2, Colour};
+
+  Assert(RenderGroup->Used + sizeof(Header) + sizeof(Entry) <= RenderGroup->Size);
+
+  byte* Base = RenderGroup->Buffer + RenderGroup->Used;
+
+  CopyMemory(Base, &Header, sizeof(Header));
+  CopyMemory(Base + sizeof(Header), &Entry, sizeof(Entry));
+
+  RenderGroup->Used += sizeof(Header) + sizeof(Entry);
+
+  return Base;
+}
+
+internal void*
+PushBitmap(render_group* RenderGroup, loaded_bitmap* Bitmap, recti Rect, colour Colour)
+{
+  render_entry_header Header = {RENDER_BITMAP};
+  render_entry_bitmap Entry = {Rect.Left, Rect.Top, Rect.Right, Rect.Bottom, Colour, Bitmap};
+
+  Assert(RenderGroup->Used + sizeof(Header) + sizeof(Entry) <= RenderGroup->Size);
+
+  byte* Base = RenderGroup->Buffer + RenderGroup->Used;
+
+  CopyMemory(Base, &Header, sizeof(Header));
+  CopyMemory(Base + sizeof(Header), &Entry, sizeof(Entry));
+
+  RenderGroup->Used += sizeof(Header) + sizeof(Entry);
+
+  return Base;
+}
+
+internal void*
+PushClear(render_group* RenderGroup, colour Colour)
+{
+  render_entry_header Header = {RENDER_CLEAR};
+  render_entry_clear Entry = {Colour};
+
+  Assert(RenderGroup->Used + sizeof(Header) + sizeof(Entry) <= RenderGroup->Size);
+
+  byte* Base = RenderGroup->Buffer + RenderGroup->Used;
+
+  CopyMemory(Base, &Header, sizeof(Header));
+  CopyMemory(Base + sizeof(Header), &Entry, sizeof(Entry));
+
+  RenderGroup->Used += sizeof(Header) + sizeof(Entry);
+
+  return Base;
+}
 
 inline u64 StringLength(char* String)
 {
@@ -562,4 +721,113 @@ void Update(void)
   }
 
   LastInput = Input;
+}
+
+void Render(render_group* RenderGroup)
+{
+  colour ClearColour = {0xFF312EBB};
+  PushClear(RenderGroup, ClearColour);
+
+  s32 XOffset = 50;
+  s32 YOffset = 50;
+  s32 TileMargin = 10;
+
+  recti BoardClipRect = {
+    XOffset, YOffset,
+    XOffset + 8 * TileSize, YOffset + 8 * TileSize,
+  };
+
+  // NOTE(robin): Put the staged piece back if we release the mouse outside the board
+  if (MouseLReleasedOutside(BoardClipRect) && MousePiece)
+  {
+    CurrentBoard[LastMouseTileIndex] = MousePiece;
+    MousePiece = NONE;
+  }
+
+  for (s32 Y = 0; Y < 8; Y++)
+  {
+    for (s32 X = 0; X < 8; X++)
+    {
+      u32 TileIndex = Y * 8 + X;
+
+      // NOTE(robin): Alternate tile colours
+      colour TileColour = (TileIndex + (Y & 1)) & 1 ? (colour){0xFF333333} : (colour){0xFFFFFFFF};
+
+      recti Tile = {
+        XOffset + TileSize * X,
+        YOffset + TileSize * Y,
+        XOffset + TileSize * (X + 1),
+        YOffset + TileSize * (Y + 1),
+      };
+
+      PushRect(RenderGroup, Tile, TileColour);
+
+      piece Piece = CurrentBoard[TileIndex];
+
+      if (MouseLClickedIn(Tile))
+      {
+        MousePiece = CurrentBoard[TileIndex];
+        CurrentBoard[TileIndex] = NONE;
+        LastMouseTileIndex = TileIndex;
+      }
+
+      if (MouseLReleasedIn(Tile))
+      {
+        if (LegalMove(LastMouseTileIndex, TileIndex))
+        {
+          CurrentBoard[TileIndex] = MousePiece;
+          MousePiece = NONE;
+        }
+        else
+        {
+          CurrentBoard[LastMouseTileIndex] = MousePiece;
+          MousePiece = NONE;
+        }
+      }
+
+      if (Piece)
+      {
+        recti TileRect = {
+          TileMargin + Tile.Left,
+          TileMargin + Tile.Top,
+          Tile.Right - TileMargin,
+          Tile.Bottom - TileMargin,
+        };
+
+        PushBitmap(RenderGroup, &PieceBitmap[Piece], TileRect, (colour){~0L});
+      }
+    }
+  }
+
+  // NOTE(robin): The texture lags the cursor a bit because the window callback is not called every frame.
+
+  if (MousePiece) // NOTE(robin): We're holding a piece with the mouse
+  {
+    // NOTE(robin): Draw the piece bitmap over the cursor
+    recti BitmapRect = {
+      Input.Mouse.X - TileSize/2 + TileMargin,
+      Input.Mouse.Y - TileSize/2 + TileMargin,
+      Input.Mouse.X + TileSize/2 - TileMargin,
+      Input.Mouse.Y + TileSize/2 - TileMargin,
+    };
+
+    PushBitmap(RenderGroup, &PieceBitmap[MousePiece], BitmapRect, (colour){~0U});
+
+    // NOTE(robin): Also highlight the possible moves in red
+    move_array PossibleMoves = GetMoves(LastMouseTileIndex);
+    for (u32 MoveIndex = 0; MoveIndex < PossibleMoves.Count; MoveIndex++)
+    {
+      u8 TileIndex = PossibleMoves.Moves[MoveIndex].To;
+      s32 X = TileIndex & 7;
+      s32 Y = TileIndex >> 3;
+      recti Tile = {
+        XOffset + TileSize * X,
+        YOffset + TileSize * Y,
+        XOffset + TileSize * (X + 1),
+        YOffset + TileSize * (Y + 1),
+      };
+      PushRect(RenderGroup, Tile, (colour){0x7FCC0000});
+    }
+  }
+
 }

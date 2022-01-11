@@ -8,6 +8,12 @@
 #include <windowsx.h>
 #include <gl/gl.h>
 
+void* Win64AllocateMemory(umm Bytes)
+{
+  void* Result = VirtualAlloc(0, Bytes, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
+  return Result;
+}
+
 void Win64WriteToStdOut(char* Buffer)
 {
   u32 BytesWritten = 0;
@@ -110,6 +116,7 @@ void Win64InitOpenGL(HWND Window)
 LRESULT MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
 {
   LRESULT Result = 0;
+
   switch (Message)
   {
     case WM_DESTROY:
@@ -133,6 +140,7 @@ LRESULT MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LPar
       Result = DefWindowProcA(Window, Message, WParam, LParam);
     };
   }
+
   return Result;
 }
 
@@ -146,6 +154,7 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
 
   Platform.ReadEntireFile = Win64ReadEntireFile;
   Platform.StdOut = Win64WriteToStdOut;
+  Platform.AllocateMemory = Win64AllocateMemory;
 
   WNDCLASS WindowClass = {0};
   WindowClass.style = CS_VREDRAW|CS_HREDRAW|CS_OWNDC;
@@ -168,11 +177,14 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
 
   Win64InitOpenGL(Window);
 
+  RenderGroup = AllocateRenderGroup(Megabytes(8));
+
   // NOTE(robin): Read our piece bitmaps and upload them to the GPU
   for (u32 Piece = NONE; Piece < CHESS_PIECE_COUNT; Piece++)
   {
     char BitmapPath[MAX_PATH] = {0};
     PieceBitmap[Piece] = ReadBitmap((char*)CatStrings(BitmapPath, 3, EXEDirectory, "../", PieceAsset[Piece]));
+    PieceBitmap[Piece].Transform = FLIP_VERTICAL;
     glGenTextures(1, &PieceBitmap[Piece].TextureHandle);
     glBindTexture(GL_TEXTURE_2D, PieceBitmap[Piece].TextureHandle);
 
@@ -190,6 +202,7 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
 
   while (Running)
   {
+    RenderGroup->Used = 0;
     Update();
 
     MSG Message;
@@ -224,136 +237,93 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
       }
     }
 
-    // TODO(robin): Create a proper pushbuffer renderer in the program layer
+    Render(RenderGroup);
 
-    colour ClearColour = {0xFF312EBB};
-    glClearColor(ClearColour.R/255.0, ClearColour.G/255.0, ClearColour.B/255.0, 1);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    s32 XOffset = 50;
-    s32 YOffset = 50;
-    s32 TileMargin = 10;
-
-    recti BoardClipRect = {
-      XOffset, YOffset,
-      XOffset + 8 * TileSize, YOffset + 8 * TileSize,
-    };
-
-    // NOTE(robin): Put the staged piece back if we release the mouse outside the board
-    if (MouseLReleasedOutside(BoardClipRect) && MousePiece)
+    // NOTE(robin): Push-buffer based renderer. The program layer pushes primitives like RECT, LINE, BITMAP
+    // into an array and we render the commands here with any backend we like.
+    for (umm BaseAddress = 0; BaseAddress < RenderGroup->Used;)
     {
-      CurrentBoard[LastMouseTileIndex] = MousePiece;
-      MousePiece = NONE;
-    }
+      render_entry_header* Header = (render_entry_header*)(RenderGroup->Buffer + BaseAddress);
+      BaseAddress += sizeof(*Header);
+      void* Data = (byte*)Header + sizeof(*Header);
 
-    for (s32 Y = 0; Y < 8; Y++)
-    {
-      for (s32 X = 0; X < 8; X++)
+      switch (Header->Type)
       {
-        u32 TileIndex = Y * 8 + X;
-
-        // NOTE(robin): Alternate tile colours
-        (TileIndex + (Y & 1)) & 1 ? glColor3f(0.2, 0.2, 0.2) : glColor3f(1, 1, 1);
-
-        recti Tile = {
-          XOffset + TileSize * X,
-          YOffset + TileSize * Y,
-          XOffset + TileSize * (X + 1),
-          YOffset + TileSize * (Y + 1),
-        };
-
-        glRectiv(&Tile.E[0], &Tile.E[2]);
-
-        piece Piece = CurrentBoard[TileIndex];
-
-        if (MouseLClickedIn(Tile))
+        case RENDER_RECT:
         {
-          MousePiece = CurrentBoard[TileIndex];
-          CurrentBoard[TileIndex] = NONE;
-          LastMouseTileIndex = TileIndex;
-        }
+          render_entry_rect* Entry = (render_entry_rect*)Data;
+          colour Colour = Entry->Colour;
+          glColor4f(Colour.R/255.0, Colour.G/255.0, Colour.B/255.0, Colour.A/255.0);
+          glRectf(Entry->Left, Entry->Top, Entry->Right, Entry->Bottom);
+          BaseAddress += sizeof(*Entry);
+        } break;
 
-        if (MouseLReleasedIn(Tile))
+        case RENDER_LINE:
         {
-          if (LegalMove(LastMouseTileIndex, TileIndex))
-          {
-            CurrentBoard[TileIndex] = MousePiece;
-            MousePiece = NONE;
-          }
-          else
-          {
-            CurrentBoard[LastMouseTileIndex] = MousePiece;
-            MousePiece = NONE;
-          }
-        }
-
-        if (Piece)
-        {
-          recti TileRect = {
-            TileMargin + Tile.Left,
-            TileMargin + Tile.Top,
-            Tile.Right - TileMargin,
-            Tile.Bottom - TileMargin,
-          };
-
-          glBindTexture(GL_TEXTURE_2D, PieceBitmap[Piece].TextureHandle);
-          glEnable(GL_TEXTURE_2D);
-          glBegin(GL_QUADS);
-
-          glColor3f(1, 1, 1);
-          glTexCoord2i(1, 1); glVertex2i(TileRect.Left, TileRect.Top);
-          glTexCoord2i(1, 0); glVertex2i(TileRect.Left, TileRect.Bottom);
-          glTexCoord2i(0, 0); glVertex2i(TileRect.Right, TileRect.Bottom);
-          glTexCoord2i(0, 1); glVertex2i(TileRect.Right, TileRect.Top);
-
+          render_entry_line* Entry = (render_entry_line*)Data;
+          colour Colour = Entry->Colour;
+          glBegin(GL_LINES);
+          glColor4f(Colour.R/255.0, Colour.G/255.0, Colour.B/255.0, Colour.A/255.0);
+          glVertex2f(Entry->Point1.X, Entry->Point1.Y);
+          glVertex2f(Entry->Point2.X, Entry->Point2.Y);
           glEnd();
-          glDisable(GL_TEXTURE_2D);
+          BaseAddress += sizeof(*Entry);
+        } break;
+
+        case RENDER_BITMAP:
+        {
+          render_entry_bitmap* Entry = (render_entry_bitmap*)Data;
+
+          s32 Width = Entry->Bitmap->Width;
+          s32 Height = Entry->Bitmap->Height;
+          colour Colour = Entry->Colour;
+
+          glEnable(GL_TEXTURE_2D);
+
+          glBindTexture(GL_TEXTURE_2D, Entry->Bitmap->TextureHandle);
+
+          glBegin(GL_QUADS);
+          glColor4f(Colour.R/255.0, Colour.G/255.0, Colour.B/255.0, Colour.A/255.0);
+          switch (Entry->Bitmap->Transform)
+          {
+            case NONE:
+            {
+              glTexCoord2i(0, 0); glVertex2i(Entry->Left, Entry->Top);
+              glTexCoord2i(0, 1); glVertex2i(Entry->Left, Entry->Bottom);
+              glTexCoord2i(1, 1); glVertex2i(Entry->Right, Entry->Bottom);
+              glTexCoord2i(1, 0); glVertex2i(Entry->Right, Entry->Top);
+            } break;
+
+            case FLIP_VERTICAL:
+            {
+              glTexCoord2i(1, 1); glVertex2i(Entry->Left, Entry->Top);
+              glTexCoord2i(1, 0); glVertex2i(Entry->Left, Entry->Bottom);
+              glTexCoord2i(0, 0); glVertex2i(Entry->Right, Entry->Bottom);
+              glTexCoord2i(0, 1); glVertex2i(Entry->Right, Entry->Top);
+            } break;
+          }
+          glEnd();
+
           glBindTexture(GL_TEXTURE_2D, 0);
-        }
-      }
-    }
 
-    // NOTE(robin): The texture lags the cursor a bit because the window callback is not called every frame.
+          glDisable(GL_TEXTURE_2D);
 
-    if (MousePiece) // NOTE(robin): We're holding a piece with the mouse
-    {
-      // NOTE(robin): Draw the piece bitmap over the cursor
-      s32 Left = Input.Mouse.X - TileSize/2 + TileMargin;
-      s32 Top = Input.Mouse.Y - TileSize/2 + TileMargin;
-      s32 Right = Input.Mouse.X + TileSize/2 - TileMargin;
-      s32 Bottom = Input.Mouse.Y + TileSize/2 - TileMargin;
+          BaseAddress += sizeof(*Entry);
+        } break;
 
-      glBindTexture(GL_TEXTURE_2D, PieceBitmap[MousePiece].TextureHandle);
+        case RENDER_CLEAR:
+        {
+          render_entry_clear* Entry = (render_entry_clear*)Data;
+          colour Colour = Entry->Colour;
+          glClearColor(Colour.R/255.0, Colour.G/255.0, Colour.B/255.0, Colour.A/255.0);
+          glClear(GL_COLOR_BUFFER_BIT);
+          BaseAddress += sizeof(*Entry);
+        } break;
 
-      glEnable(GL_TEXTURE_2D);
-
-      glBegin(GL_QUADS);
-
-      glColor3f(1, 1, 1);
-      glTexCoord2i(1, 1); glVertex2i(Left, Top);
-      glTexCoord2i(1, 0); glVertex2i(Left, Bottom);
-      glTexCoord2i(0, 0); glVertex2i(Right, Bottom);
-      glTexCoord2i(0, 1); glVertex2i(Right, Top);
-
-      glEnd();
-
-      glDisable(GL_TEXTURE_2D);
-
-      // NOTE(robin): Also highlight the possible moves in red
-      move_array PossibleMoves = GetMoves(LastMouseTileIndex);
-      glColor4f(0.8, 0, 0, 0.5);
-      for (u32 MoveIndex = 0; MoveIndex < PossibleMoves.Count; MoveIndex++)
-      {
-        u8 TileIndex = PossibleMoves.Moves[MoveIndex].To;
-        s32 X = TileIndex & 7;
-        s32 Y = TileIndex >> 3;
-        recti Tile = {
-          XOffset + TileSize * X,
-          YOffset + TileSize * Y,
-          XOffset + TileSize * (X + 1),
-          YOffset + TileSize * (Y + 1),
-        };
-        glRectiv(&Tile.E[0], &Tile.E[2]);
+        default:
+        {
+          InvalidCodePath;
+        } break;
       }
     }
 
