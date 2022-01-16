@@ -9,7 +9,7 @@
 #define Gigabytes(Value) (Megabytes(Value)*1024ULL)
 #define Terabytes(Value) (Gigabytes(Value)*1024ULL)
 
-#define global static
+#define global           // NOTE(robin): So we can grep for globals
 #define local static
 #define internal static
 
@@ -110,7 +110,7 @@ typedef struct
 {
   u32 Size;
   byte* Data;
-} file_read_result;
+} entire_file;
 
 #pragma pack(push, 1)
 typedef struct
@@ -211,15 +211,19 @@ typedef struct
   move Moves[64];
 } move_array;
 
-typedef file_read_result (platform_read_entire_file)(char*);
-typedef void (platform_write_to_std_out)(char*);
-typedef void* (platform_allocate_memory)(umm);
+typedef entire_file platform_read_entire_file(char*);
+typedef b32 platform_write_entire_file(char*, void*, umm);
+typedef void platform_write_to_std_out(char*);
+typedef void* platform_allocate_memory(umm);
+typedef void platform_deallocate_memory(void*);
 
 typedef struct
 {
   platform_read_entire_file* ReadEntireFile;
+  platform_write_entire_file* WriteEntireFile;
   platform_write_to_std_out* StdOut;
   platform_allocate_memory* AllocateMemory;
+  platform_deallocate_memory* DeallocateMemory;
 } platform_api;
 
 global b32 Running = 1;
@@ -247,6 +251,8 @@ global const char* const PieceAsset[] = { // TODO(robin): Maybe factor this into
   [NITE_B] = "assets/piece_black_knight.bmp",
 };
 global loaded_bitmap PieceBitmap[ArrayCount(PieceAsset)];
+global loaded_bitmap GlyphTable[256];
+global loaded_bitmap* GlyphTableP = GlyphTable;
 global const piece DefaultBoard[] = {
   ROOK_B, NITE_B, BISH_B, QUEN_B, KING_B, BISH_B, NITE_B, ROOK_B,
   PAWN_B, PAWN_B, PAWN_B, PAWN_B, PAWN_B, PAWN_B, PAWN_B, PAWN_B,
@@ -352,6 +358,78 @@ PushClear(render_group* RenderGroup, colour Colour)
   RenderGroup->Used += sizeof(Header) + sizeof(Entry);
 
   return Base;
+}
+
+internal void*
+PushString(render_group* RenderGroup, s32 X, s32 Y, char* Text, colour Colour)
+{
+  // TODO(robin): Figure out how we want to handle \n and \r
+  byte* Result = RenderGroup->Buffer + RenderGroup->Used;
+  for (;*Text; Text++)
+  {
+    loaded_bitmap* Glyph = &GlyphTableP[*Text];
+    render_entry_header Header = {RENDER_BITMAP};
+    render_entry_bitmap Entry = {X, Y, X + (s32)Glyph->Width, Y + (s32)Glyph->Height, Colour, Glyph};
+    X += Glyph->Width;
+
+    Assert(RenderGroup->Used + sizeof(Header) + sizeof(Entry) <= RenderGroup->Size);
+
+    byte* Base = RenderGroup->Buffer + RenderGroup->Used;
+
+    CopyMemory(Base, &Header, sizeof(Header));
+    CopyMemory(Base + sizeof(Header), &Entry, sizeof(Entry));
+
+    RenderGroup->Used += sizeof(Header) + sizeof(Entry);
+  }
+
+  return Result;
+}
+
+void SerialiseGlyphTable(char* Filename)
+{
+  umm BytesToWrite = 0;
+
+  // NOTE(robin): Compute how much memory we need
+  for (u32 Glyph = 0; Glyph < ArrayCount(GlyphTable); Glyph++)
+  {
+    BytesToWrite += sizeof(GlyphTable[0]);
+    BytesToWrite += GlyphTable[Glyph].Width * GlyphTable[Glyph].Height * 4;
+  }
+
+  byte* Data = Platform.AllocateMemory(BytesToWrite);
+  byte* Base = Data;
+
+  for (u32 Glyph = 0; Glyph < ArrayCount(GlyphTable); Glyph++)
+  {
+    loaded_bitmap Bitmap = GlyphTable[Glyph];
+    CopyMemory(Base, &Bitmap, sizeof(Bitmap));
+    Base += sizeof(Bitmap);
+
+    umm PixelByteCount = Bitmap.Width * Bitmap.Height * 4;
+    CopyMemory(Base, Bitmap.Pixels, PixelByteCount);
+    Base += PixelByteCount;
+  }
+
+  Platform.WriteEntireFile(Filename, Data, BytesToWrite);
+
+  Platform.DeallocateMemory(Data);
+}
+
+loaded_bitmap* DeserialiseGlyphTable(char* Filename)
+{
+  loaded_bitmap* Result = GlyphTableP;
+  byte* Data = Platform.ReadEntireFile(Filename).Data;
+  byte* Base = Data;
+
+  for (u32 Glyph = 0; Glyph < ArrayCount(GlyphTable); Glyph++)
+  {
+    loaded_bitmap* Bitmap = (loaded_bitmap*)Base + Glyph;
+    Bitmap->Pixels = (byte*)(Bitmap + 1);
+    Base += Bitmap->Width * Bitmap->Height * 4;
+    Result[Glyph] = *Bitmap;
+  }
+
+  return Result;
 }
 
 inline u64 StringLength(char* String)
@@ -637,7 +715,7 @@ loaded_bitmap ReadBitmap(char* Filename)
 {
   loaded_bitmap Result = {0};
 
-  file_read_result File = Platform.ReadEntireFile(Filename);
+  entire_file File = Platform.ReadEntireFile(Filename);
 
   bmp_header* Header = (bmp_header*)File.Data;
 
@@ -829,5 +907,7 @@ void Render(render_group* RenderGroup)
       PushRect(RenderGroup, Tile, (colour){0x7FCC0000});
     }
   }
+
+  PushString(RenderGroup, 0, 0, "Hello Text!", (colour){~0U});
 
 }
