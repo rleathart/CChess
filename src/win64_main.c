@@ -363,7 +363,10 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
       }
     }
 
-    Render(RenderGroup);
+    recti ClientRect;
+    GetClientRect(Window, (LPRECT)&ClientRect);
+
+    Render(RenderGroup, ClientRect);
 
     // NOTE(robin): Push-buffer based renderer. The program layer pushes primitives like RECT, LINE, BITMAP
     // into an array and we render the commands here with any backend we like.
