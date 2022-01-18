@@ -919,7 +919,7 @@ void Render(render_group* RenderGroup, recti ClipRect)
   ClearColour = ColourAdd(ClearColour, 15);
   PushClear(RenderGroup, ClearColour);
 
-  recti MenuRect = {0, 0, 170, RenderHeight};
+  recti MenuRect = {0, 0, RenderWidth / 5.0, RenderHeight};
   PushRect(RenderGroup, MenuRect, (colour){0xFF323240});
   PushStringCentred(RenderGroup, (v2i){MenuRect.Right/2.0, MenuRect.Top + 30}, "Chess", (colour){~0U});
 
@@ -972,7 +972,8 @@ void Render(render_group* RenderGroup, recti ClipRect)
       s32 TileSize = 80;
       s32 TileMargin = 10;
 
-      recti BoardRect = {
+      recti BoardRect =
+      {
         XOffset, YOffset,
         XOffset + 8 * TileSize, YOffset + 8 * TileSize,
       };
@@ -1031,7 +1032,8 @@ void Render(render_group* RenderGroup, recti ClipRect)
 
           if (Piece)
           {
-            recti TileRect = {
+            recti TileRect =
+            {
               TileMargin + Tile.Left,
               TileMargin + Tile.Top,
               Tile.Right - TileMargin,
