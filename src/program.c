@@ -456,17 +456,17 @@ PushButton(render_group* RenderGroup, recti Rect, char* Text, colour ButtonColou
 }
 
 internal do_button_result
-DoButton(render_group* RenderGroup, button ButtonIndex)
+DoButton(render_group* RenderGroup, button Button)
 {
   do_button_result Result = {0};
 
-  Result.LClicked = MouseLClickedIn(ButtonIndex.Rect);
-  Result.Hovered = InRect(Input.Mouse.XY, ButtonIndex.Rect);
+  Result.LClicked = MouseLClickedIn(Button.Rect);
+  Result.Hovered = InRect(Input.Mouse.XY, Button.Rect);
 
-  colour ButtonColour = Result.Hovered ? ButtonIndex.HoveredColour : ButtonIndex.Colour;
-  colour TextColour = Result.Hovered ? ButtonIndex.HoveredTextColour : ButtonIndex.TextColour;
+  colour ButtonColour = Result.Hovered ? Button.HoveredColour : Button.Colour;
+  colour TextColour = Result.Hovered ? Button.HoveredTextColour : Button.TextColour;
 
-  PushButton(RenderGroup, ButtonIndex.Rect, ButtonIndex.Text, ButtonColour, TextColour);
+  PushButton(RenderGroup, Button.Rect, Button.Text, ButtonColour, TextColour);
 
   return Result;
 }
