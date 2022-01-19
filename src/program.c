@@ -9,7 +9,7 @@
 #define Gigabytes(Value) (Megabytes(Value)*1024ULL)
 #define Terabytes(Value) (Gigabytes(Value)*1024ULL)
 
-#define global static
+#define global           // NOTE(robin): So we can grep for globals
 #define local static
 #define internal static
 
@@ -37,8 +37,6 @@ typedef signed long long s64;
 typedef u8 byte;
 typedef s32 b32;
 typedef u64 umm;
-
-const u32 TileSize = 80;
 
 enum
 {
@@ -115,7 +113,7 @@ typedef struct
 {
   u32 Size;
   byte* Data;
-} file_read_result;
+} entire_file;
 
 #pragma pack(push, 1)
 typedef struct
@@ -216,15 +214,35 @@ typedef struct
   move Moves[64];
 } move_array;
 
-typedef file_read_result (platform_read_entire_file)(char*);
-typedef void (platform_write_to_std_out)(char*);
-typedef void* (platform_allocate_memory)(umm);
+typedef struct
+{
+  recti Rect;
+  char* Text;
+  colour Colour;
+  colour TextColour;
+  colour HoveredColour;
+  colour HoveredTextColour;
+} button;
+
+typedef struct
+{
+  b32 LClicked;
+  b32 Hovered;
+} do_button_result;
+
+typedef entire_file platform_read_entire_file(char*);
+typedef b32 platform_write_entire_file(char*, void*, umm);
+typedef void platform_write_to_std_out(char*);
+typedef void* platform_allocate_memory(umm);
+typedef void platform_deallocate_memory(void*);
 
 typedef struct
 {
   platform_read_entire_file* ReadEntireFile;
+  platform_write_entire_file* WriteEntireFile;
   platform_write_to_std_out* StdOut;
   platform_allocate_memory* AllocateMemory;
+  platform_deallocate_memory* DeallocateMemory;
 } platform_api;
 
 global b32 Running = 1;
@@ -252,6 +270,8 @@ global const char* const PieceAsset[] = { // TODO(robin): Maybe factor this into
   [NITE_B] = "assets/piece_black_knight.bmp",
 };
 global loaded_bitmap PieceBitmap[ArrayCount(PieceAsset)];
+global loaded_bitmap GlyphTable[256];
+global loaded_bitmap* GlyphTableP = GlyphTable;
 global const piece DefaultBoard[] = {
   ROOK_B, NITE_B, BISH_B, QUEN_B, KING_B, BISH_B, NITE_B, ROOK_B,
   PAWN_B, PAWN_B, PAWN_B, PAWN_B, PAWN_B, PAWN_B, PAWN_B, PAWN_B,
@@ -359,6 +379,150 @@ PushClear(render_group* RenderGroup, colour Colour)
   return Base;
 }
 
+internal void*
+PushString(render_group* RenderGroup, s32 X, s32 Y, char* Text, colour Colour)
+{
+  // TODO(robin): Figure out how we want to handle \n and \r
+  byte* Result = RenderGroup->Buffer + RenderGroup->Used;
+  for (;*Text; Text++)
+  {
+    loaded_bitmap* Glyph = &GlyphTableP[*Text];
+    render_entry_header Header = {RENDER_BITMAP};
+    render_entry_bitmap Entry = {X, Y, X + (s32)Glyph->Width, Y + (s32)Glyph->Height, Colour, Glyph};
+    X += Glyph->Width;
+
+    Assert(RenderGroup->Used + sizeof(Header) + sizeof(Entry) <= RenderGroup->Size);
+
+    byte* Base = RenderGroup->Buffer + RenderGroup->Used;
+
+    CopyMemory(Base, &Header, sizeof(Header));
+    CopyMemory(Base + sizeof(Header), &Entry, sizeof(Entry));
+
+    RenderGroup->Used += sizeof(Header) + sizeof(Entry);
+  }
+
+  return Result;
+}
+
+internal colour
+ColourAdd(colour Colour, s32 Value)
+{
+  colour Result = Colour;
+
+  Result.R += Value;
+  Result.G += Value;
+  Result.B += Value;
+
+  return Result;
+}
+
+// TODO(robin): Figure out a better way to get text bounds
+internal recti
+TextRect(char* Text)
+{
+  recti Result = {0};
+
+  for (;*Text; Text++)
+  {
+    loaded_bitmap* Glyph = &GlyphTableP[*Text];
+    Result.Right += Glyph->Width;
+    if (Glyph->Height > Result.Bottom)
+      Result.Bottom = Glyph->Height;
+  }
+
+  return Result;
+}
+
+internal void*
+PushStringCentred(render_group* RenderGroup, v2i Position, char* Text, colour Colour)
+{
+  byte* Result = RenderGroup->Buffer + RenderGroup->Used;
+
+  recti TextBounds = TextRect(Text);
+  s32 X = Position.X - TextBounds.Right/2.0;
+  s32 Y = Position.Y - TextBounds.Bottom/2.0;
+  PushString(RenderGroup, X, Y, Text, Colour);
+
+  return Result;
+}
+
+internal void*
+PushButton(render_group* RenderGroup, recti Rect, char* Text, colour ButtonColour, colour TextColor)
+{
+  byte* Result = RenderGroup->Buffer + RenderGroup->Used;
+  PushRect(RenderGroup, Rect, ButtonColour);
+  s32 Width = Rect.Right - Rect.Left;
+  s32 Height = Rect.Bottom - Rect.Top;
+  recti TextBounds = TextRect(Text);
+  s32 X = Rect.Left + Width/2 - TextBounds.Right/2;
+  s32 Y = Rect.Top + Height/2 - TextBounds.Bottom/2;
+  PushString(RenderGroup, X, Y, Text, TextColor);
+  return Result;
+}
+
+internal do_button_result
+DoButton(render_group* RenderGroup, button Button)
+{
+  do_button_result Result = {0};
+
+  Result.LClicked = MouseLClickedIn(Button.Rect);
+  Result.Hovered = InRect(Input.Mouse.XY, Button.Rect);
+
+  colour ButtonColour = Result.Hovered ? Button.HoveredColour : Button.Colour;
+  colour TextColour = Result.Hovered ? Button.HoveredTextColour : Button.TextColour;
+
+  PushButton(RenderGroup, Button.Rect, Button.Text, ButtonColour, TextColour);
+
+  return Result;
+}
+
+void SerialiseGlyphTable(char* Filename)
+{
+  umm BytesToWrite = 0;
+
+  // NOTE(robin): Compute how much memory we need
+  for (u32 Glyph = 0; Glyph < ArrayCount(GlyphTable); Glyph++)
+  {
+    BytesToWrite += sizeof(GlyphTable[0]);
+    BytesToWrite += GlyphTable[Glyph].Width * GlyphTable[Glyph].Height * 4;
+  }
+
+  byte* Data = Platform.AllocateMemory(BytesToWrite);
+  byte* Base = Data;
+
+  for (u32 Glyph = 0; Glyph < ArrayCount(GlyphTable); Glyph++)
+  {
+    loaded_bitmap Bitmap = GlyphTable[Glyph];
+    CopyMemory(Base, &Bitmap, sizeof(Bitmap));
+    Base += sizeof(Bitmap);
+
+    umm PixelByteCount = Bitmap.Width * Bitmap.Height * 4;
+    CopyMemory(Base, Bitmap.Pixels, PixelByteCount);
+    Base += PixelByteCount;
+  }
+
+  Platform.WriteEntireFile(Filename, Data, BytesToWrite);
+
+  Platform.DeallocateMemory(Data);
+}
+
+loaded_bitmap* DeserialiseGlyphTable(char* Filename)
+{
+  loaded_bitmap* Result = GlyphTableP;
+  byte* Data = Platform.ReadEntireFile(Filename).Data;
+  byte* Base = Data;
+
+  for (u32 Glyph = 0; Glyph < ArrayCount(GlyphTable); Glyph++)
+  {
+    loaded_bitmap* Bitmap = (loaded_bitmap*)Base + Glyph;
+    Bitmap->Pixels = (byte*)(Bitmap + 1);
+    Base += Bitmap->Width * Bitmap->Height * 4;
+    Result[Glyph] = *Bitmap;
+  }
+
+  return Result;
+}
+
 inline u64 StringLength(char* String)
 {
   u64 Result = 0;
@@ -382,6 +546,21 @@ char* CatStrings(char* Dest, s32 Count, ...)
   }
 
   *Dest = 0;
+
+  return Result;
+}
+
+inline b32 StringsAreEqual(char* String1, char* String2)
+{
+  b32 Result = String1 == String2;
+
+  if (!Result && String1 && String2)
+  {
+    while (*String1 && *String2 && (*String1 == *String2))
+      String1++, String2++;
+
+    Result = *String1 == 0 && *String2 == 0;
+  }
 
   return Result;
 }
@@ -642,7 +821,7 @@ loaded_bitmap ReadBitmap(char* Filename)
 {
   loaded_bitmap Result = {0};
 
-  file_read_result File = Platform.ReadEntireFile(Filename);
+  entire_file File = Platform.ReadEntireFile(Filename);
 
   bmp_header* Header = (bmp_header*)File.Data;
 
@@ -728,111 +907,208 @@ void Update(void)
   LastInput = Input;
 }
 
-void Render(render_group* RenderGroup)
+void Render(render_group* RenderGroup, recti ClipRect)
 {
+  s32 RenderWidth = ClipRect.Right - ClipRect.Left;
+  s32 RenderHeight = ClipRect.Bottom - ClipRect.Top;
+
+  typedef enum
+  {
+    SCENE_PLAY,
+    SCENE_HISTORY,
+  } scene;
+
+  local scene CurrentScene = SCENE_PLAY;
+
   colour ClearColour = {0xFF312EBB};
+  ClearColour = ColourAdd(ClearColour, 15);
   PushClear(RenderGroup, ClearColour);
 
-  s32 XOffset = 50;
-  s32 YOffset = 50;
-  s32 TileMargin = 10;
+  recti MenuRect = {0, 0, RenderWidth / 5.0, RenderHeight};
+  PushRect(RenderGroup, MenuRect, (colour){0xFF323240});
+  PushStringCentred(RenderGroup, (v2i){MenuRect.Right/2.0, MenuRect.Top + 30}, "Chess", (colour){~0U});
 
-  recti BoardClipRect = {
-    XOffset, YOffset,
-    XOffset + 8 * TileSize, YOffset + 8 * TileSize,
+  // TODO(robin): Find a better way of doing layouts
+  u32 ButtonCount = 0;
+  button Buttons[32] = {0};
+
+  colour ButtonColour = {0xFF282833};
+  colour HoveredButtonColour = ColourAdd(ButtonColour, 20);
+  colour TextColour = {0xFFFFFFFF};
+  colour HoveredTextColour = {0xFFFFFFFF};
+
+  Buttons[ButtonCount++] = (button){
+    {20, 70, MenuRect.Right - 20, 120}, "Play",
+    ButtonColour, TextColour,
+    HoveredButtonColour, HoveredTextColour
+  };
+  Buttons[ButtonCount++] = (button){
+    {20, Buttons[ButtonCount - 1].Rect.Bottom+20, MenuRect.Right-20, Buttons[ButtonCount - 1].Rect.Bottom + 20 + 50},
+    "Match History",
+    ButtonColour, TextColour,
+    HoveredButtonColour, HoveredTextColour
   };
 
-  // NOTE(robin): Put the staged piece back if we release the mouse outside the board
-  if (MouseLReleasedOutside(BoardClipRect) && MousePiece)
+  for (u32 ButtonIndex = 0; ButtonIndex < ButtonCount; ButtonIndex++)
   {
-    CurrentBoard[LastMouseTileIndex] = MousePiece;
-    MousePiece = NONE;
+    button* Button = &Buttons[ButtonIndex];
+    do_button_result ButtonResult = DoButton(RenderGroup, *Button);
+
+    if (ButtonResult.LClicked)
+    {
+      if (Button == &Buttons[0])
+      {
+        CurrentScene = SCENE_PLAY;
+      }
+      if (Button == &Buttons[1])
+      {
+        CurrentScene = SCENE_HISTORY;
+      }
+    }
+
   }
 
-  for (s32 Y = 0; Y < 8; Y++)
+  switch (CurrentScene)
   {
-    for (s32 X = 0; X < 8; X++)
+    case SCENE_PLAY:
     {
-      u32 TileIndex = Y * 8 + X;
+      s32 XOffset = MenuRect.Right + 50;
+      s32 YOffset = 50;
+      s32 TileSize = 80;
+      s32 TileMargin = 10;
 
-      // NOTE(robin): Alternate tile colours
-      colour TileColour = (TileIndex + (Y & 1)) & 1 ? (colour){0xFF333333} : (colour){0xFFFFFFFF};
-
-      recti Tile = {
-        XOffset + TileSize * X,
-        YOffset + TileSize * Y,
-        XOffset + TileSize * (X + 1),
-        YOffset + TileSize * (Y + 1),
+      recti BoardRect =
+      {
+        XOffset, YOffset,
+        XOffset + 8 * TileSize, YOffset + 8 * TileSize,
       };
 
-      PushRect(RenderGroup, Tile, TileColour);
-
-      piece Piece = CurrentBoard[TileIndex];
-
-      if (MouseLClickedIn(Tile))
+      // NOTE(robin): Put the staged piece back if we release the mouse outside the board
+      if (MouseLReleasedOutside(BoardRect) && MousePiece)
       {
-        MousePiece = CurrentBoard[TileIndex];
-        CurrentBoard[TileIndex] = NONE;
-        LastMouseTileIndex = TileIndex;
+        CurrentBoard[LastMouseTileIndex] = MousePiece;
+        MousePiece = NONE;
       }
 
-      if (MouseLReleasedIn(Tile))
+      PushRect(RenderGroup, (recti){BoardRect.Left - 5, BoardRect.Top - 5, BoardRect.Right + 5, BoardRect.Bottom + 5},
+          (colour){0xFF1B1B1B});
+
+      // {{{ Draw the board
+      for (s32 Y = 0; Y < 8; Y++)
       {
-        if (LegalMove(LastMouseTileIndex, TileIndex))
+        for (s32 X = 0; X < 8; X++)
         {
-          CurrentBoard[TileIndex] = MousePiece;
-          MousePiece = NONE;
-        }
-        else
-        {
-          CurrentBoard[LastMouseTileIndex] = MousePiece;
-          MousePiece = NONE;
+          u32 TileIndex = Y * 8 + X;
+
+          // NOTE(robin): Alternate tile colours
+          colour TileColour = (TileIndex + (Y & 1)) & 1 ? (colour){0xFF333333} : (colour){0xFFFFFFFF};
+
+          recti Tile = {
+            XOffset + TileSize * X,
+            YOffset + TileSize * Y,
+            XOffset + TileSize * (X + 1),
+            YOffset + TileSize * (Y + 1),
+          };
+
+          PushRect(RenderGroup, Tile, TileColour);
+
+          piece Piece = CurrentBoard[TileIndex];
+
+          if (MouseLClickedIn(Tile))
+          {
+            MousePiece = CurrentBoard[TileIndex];
+            CurrentBoard[TileIndex] = NONE;
+            LastMouseTileIndex = TileIndex;
+          }
+
+          if (MouseLReleasedIn(Tile))
+          {
+            if (LegalMove(LastMouseTileIndex, TileIndex))
+            {
+              CurrentBoard[TileIndex] = MousePiece;
+              MousePiece = NONE;
+            }
+            else
+            {
+              CurrentBoard[LastMouseTileIndex] = MousePiece;
+              MousePiece = NONE;
+            }
+          }
+
+          if (Piece)
+          {
+            recti TileRect =
+            {
+              TileMargin + Tile.Left,
+              TileMargin + Tile.Top,
+              Tile.Right - TileMargin,
+              Tile.Bottom - TileMargin,
+            };
+
+            PushBitmap(RenderGroup, &PieceBitmap[Piece], TileRect, (colour){~0L});
+          }
         }
       }
+      // }}}
 
-      if (Piece)
+      // {{{ NOTE(robin): Draw the move history panel
+
+      recti MoveHistoryRect =
       {
-        recti TileRect = {
-          TileMargin + Tile.Left,
-          TileMargin + Tile.Top,
-          Tile.Right - TileMargin,
-          Tile.Bottom - TileMargin,
+        BoardRect.Right + 20,
+        BoardRect.Top,
+        MoveHistoryRect.Left + 220,
+        BoardRect.Bottom,
+      };
+
+      PushRect(RenderGroup, MoveHistoryRect, (colour){0xFF1B1B1B});
+      PushRect(RenderGroup, (recti){
+          MoveHistoryRect.Left, MoveHistoryRect.Top, MoveHistoryRect.Right, MoveHistoryRect.Top + 100
+          }, ColourAdd(ClearColour, 30));
+      PushRect(RenderGroup, (recti){
+          MoveHistoryRect.Left, MoveHistoryRect.Bottom - 100, MoveHistoryRect.Right, MoveHistoryRect.Bottom,
+          }, (colour){0xFFFFFFFF});
+
+      // }}}
+
+      // NOTE(robin): The texture lags the cursor a bit because the window callback is not called every frame.
+
+      if (MousePiece) // NOTE(robin): We're holding a piece with the mouse
+      {
+        // NOTE(robin): Draw the piece bitmap over the cursor
+        recti BitmapRect = {
+          Input.Mouse.X - TileSize/2 + TileMargin,
+          Input.Mouse.Y - TileSize/2 + TileMargin,
+          Input.Mouse.X + TileSize/2 - TileMargin,
+          Input.Mouse.Y + TileSize/2 - TileMargin,
         };
 
-        PushBitmap(RenderGroup, &PieceBitmap[Piece], TileRect, (colour){~0L});
+        PushBitmap(RenderGroup, &PieceBitmap[MousePiece], BitmapRect, (colour){~0U});
+
+        // NOTE(robin): Also highlight the possible moves in red
+        move_array PossibleMoves = GetMoves(LastMouseTileIndex);
+        for (u32 MoveIndex = 0; MoveIndex < PossibleMoves.Count; MoveIndex++)
+        {
+          u8 TileIndex = PossibleMoves.Moves[MoveIndex].To;
+          s32 X = TileIndex & 7;
+          s32 Y = TileIndex >> 3;
+          recti Tile = {
+            XOffset + TileSize * X,
+            YOffset + TileSize * Y,
+            XOffset + TileSize * (X + 1),
+            YOffset + TileSize * (Y + 1),
+          };
+          PushRect(RenderGroup, Tile, (colour){0x7FCC0000});
+        }
       }
-    }
-  }
 
-  // NOTE(robin): The texture lags the cursor a bit because the window callback is not called every frame.
+    } break;
 
-  if (MousePiece) // NOTE(robin): We're holding a piece with the mouse
-  {
-    // NOTE(robin): Draw the piece bitmap over the cursor
-    recti BitmapRect = {
-      Input.Mouse.X - TileSize/2 + TileMargin,
-      Input.Mouse.Y - TileSize/2 + TileMargin,
-      Input.Mouse.X + TileSize/2 - TileMargin,
-      Input.Mouse.Y + TileSize/2 - TileMargin,
-    };
-
-    PushBitmap(RenderGroup, &PieceBitmap[MousePiece], BitmapRect, (colour){~0U});
-
-    // NOTE(robin): Also highlight the possible moves in red
-    move_array PossibleMoves = GetMoves(LastMouseTileIndex);
-    for (u32 MoveIndex = 0; MoveIndex < PossibleMoves.Count; MoveIndex++)
+    case SCENE_HISTORY:
     {
-      u8 TileIndex = PossibleMoves.Moves[MoveIndex].To;
-      s32 X = TileIndex & 7;
-      s32 Y = TileIndex >> 3;
-      recti Tile = {
-        XOffset + TileSize * X,
-        YOffset + TileSize * Y,
-        XOffset + TileSize * (X + 1),
-        YOffset + TileSize * (Y + 1),
-      };
-      PushRect(RenderGroup, Tile, (colour){0x7FCC0000});
-    }
+      PushStringCentred(RenderGroup,
+          (v2i){MenuRect.Right + RenderWidth/2.0, RenderHeight/2.0}, "Some match history stuff", (colour){~0U});
+    } break;
   }
 
 }
