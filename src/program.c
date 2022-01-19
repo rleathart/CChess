@@ -13,11 +13,16 @@
 #define local static
 #define internal static
 
-typedef char* va_list;
-#define PtrAlignedSizeOf(Type) ((sizeof(Type) + sizeof(int*) - 1) & ~(sizeof(int*) - 1))
-#define VAStart(ArgPtr, LastNamedArg) (ArgPtr = (va_list)&LastNamedArg + PtrAlignedSizeOf(LastNamedArg))
-#define VAGet(ArgPtr, Type) (*(Type*)((ArgPtr += PtrAlignedSizeOf(Type)) - PtrAlignedSizeOf(Type)))
-#define VAEnd(ArgPtr) (ArgPtr = 0)
+// typedef char* va_list;
+// #define PtrAlignedSizeOf(Type) ((sizeof(Type) + sizeof(int*) - 1) & ~(sizeof(int*) - 1))
+// #define VAStart(ArgPtr, LastNamedArg) (ArgPtr = (va_list)&LastNamedArg + PtrAlignedSizeOf(LastNamedArg))
+// #define VAGet(ArgPtr, Type) (*(Type*)((ArgPtr += PtrAlignedSizeOf(Type)) - PtrAlignedSizeOf(Type)))
+// #define VAEnd(ArgPtr) (ArgPtr = 0)
+
+#define VAStart va_start
+#define VAGet va_arg
+#define VAEnd va_end
+#define inline static inline
 
 typedef unsigned char u8;
 typedef unsigned short u16;
