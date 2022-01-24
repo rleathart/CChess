@@ -287,6 +287,9 @@ global b32 CanCastle[4] = {1, 1, 1, 1}; // NOTE(robin): BlackQueenSide, WhiteQue
 global piece LastBoard[64];
 global piece CurrentBoard[64];
 
+inline b32 InRect(v2i Coord, recti Quad);
+inline b32 MouseLClickedIn(recti Rect);
+
 internal void*
 CopyMemory(void* DestInit, void* SourceInit, umm Size)
 {
@@ -943,7 +946,7 @@ void Render(render_group* RenderGroup, recti ClipRect)
     HoveredButtonColour, HoveredTextColour
   };
   Buttons[ButtonCount++] = (button){
-    {20, Buttons[ButtonCount - 1].Rect.Bottom+20, MenuRect.Right-20, Buttons[ButtonCount - 1].Rect.Bottom + 20 + 50},
+    {20, Buttons[0].Rect.Bottom+20, MenuRect.Right-20, Buttons[0].Rect.Bottom + 20 + 50},
     "Match History",
     ButtonColour, TextColour,
     HoveredButtonColour, HoveredTextColour
