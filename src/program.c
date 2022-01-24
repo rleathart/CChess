@@ -399,6 +399,49 @@ PushString(render_group* RenderGroup, s32 X, s32 Y, char* Text, colour Colour)
   return Result;
 }
 
+PushBoard(render_group* RenderGroup, piece Board[64], recti Rect)
+{
+  PushRect(RenderGroup, (recti){Rect.Left - 5, Rect.Top - 5, Rect.Right + 5, Rect.Bottom + 5},
+      (colour){0xFF1B1B1B});
+
+  u32 TileSize = (Rect.Right - Rect.Left) / 8;
+  for (s32 Y = 0; Y < 8; Y++)
+  {
+    for (s32 X = 0; X < 8; X++)
+    {
+      u32 TileIndex = Y * 8 + X;
+
+      // NOTE(robin): Alternate tile colours
+      colour TileColour = (TileIndex + (Y & 1)) & 1 ? (colour){0xFF333333} : (colour){0xFFFFFFFF};
+
+      recti Tile = {
+        Rect.Left + TileSize * X,
+        Rect.Top + TileSize * Y,
+        Rect.Left + TileSize * (X + 1),
+        Rect.Top + TileSize * (Y + 1),
+      };
+
+      PushRect(RenderGroup, Tile, TileColour);
+
+      piece Piece = Board[TileIndex];
+
+      if (Piece)
+      {
+        u32 TileMargin = TileSize / 8;
+        recti TileRect =
+        {
+          TileMargin + Tile.Left,
+          TileMargin + Tile.Top,
+          Tile.Right - TileMargin,
+          Tile.Bottom - TileMargin,
+        };
+
+        PushBitmap(RenderGroup, &PieceBitmap[Piece], TileRect, (colour){~0L});
+      }
+    }
+  }
+}
+
 internal colour
 ColourAdd(colour Colour, s32 Value)
 {
@@ -832,6 +875,31 @@ loaded_bitmap ReadBitmap(char* Filename)
   return Result;
 }
 
+inline recti
+RectBorder(recti Rect, s32 Value)
+{
+  recti Result = Rect;
+
+  Result.Left -= Value;
+  Result.Top -= Value;
+  Result.Right += Value;
+  Result.Bottom += Value;
+
+  return Result;
+}
+
+inline recti
+RectWH(s32 X, s32 Y, u32 Width, u32 Height)
+{
+  recti Result = {
+    .Left = X,
+    .Top = Y,
+    .Right = X + Width,
+    .Bottom = Y + Height,
+  };
+  return Result;
+}
+
 void Update(void)
 {
   // NOTE(robin): Don't update boards if we're holding a piece
@@ -898,8 +966,6 @@ void Update(void)
 
     CopyArray(LastBoard, CurrentBoard);
   }
-
-  LastInput = Input;
 }
 
 void Render(render_group* RenderGroup, recti ClipRect)
@@ -934,14 +1000,19 @@ void Render(render_group* RenderGroup, recti ClipRect)
 
   Buttons[ButtonCount++] = (button){
     {20, 70, MenuRect.Right - 20, 120}, "Play",
-    ButtonColour, TextColour,
-    HoveredButtonColour, HoveredTextColour
+      ButtonColour, TextColour,
+      HoveredButtonColour, HoveredTextColour,
   };
   Buttons[ButtonCount++] = (button){
-    {20, Buttons[ButtonCount - 1].Rect.Bottom+20, MenuRect.Right-20, Buttons[ButtonCount - 1].Rect.Bottom + 20 + 50},
-    "Match History",
-    ButtonColour, TextColour,
-    HoveredButtonColour, HoveredTextColour
+    {
+      .Left = 20,
+        .Top = Buttons[0].Rect.Bottom+20,
+        .Right = MenuRect.Right-20,
+        .Bottom = Buttons[0].Rect.Bottom + 20 + 50
+    },
+      "Match History",
+      ButtonColour, TextColour,
+      HoveredButtonColour, HoveredTextColour,
   };
 
   for (u32 ButtonIndex = 0; ButtonIndex < ButtonCount; ButtonIndex++)
@@ -974,8 +1045,18 @@ void Render(render_group* RenderGroup, recti ClipRect)
 
       recti BoardRect =
       {
-        XOffset, YOffset,
-        XOffset + 8 * TileSize, YOffset + 8 * TileSize,
+        .Left = XOffset,
+        .Top = YOffset,
+        .Right = XOffset + 8 * TileSize,
+        .Bottom = YOffset + 8 * TileSize,
+      };
+
+      recti MoveHistoryRect =
+      {
+        .Left = BoardRect.Right + 20,
+        .Top = BoardRect.Top,
+        .Right = MoveHistoryRect.Left + 220,
+        .Bottom = BoardRect.Bottom,
       };
 
       // NOTE(robin): Put the staged piece back if we release the mouse outside the board
@@ -985,29 +1066,18 @@ void Render(render_group* RenderGroup, recti ClipRect)
         MousePiece = NONE;
       }
 
-      PushRect(RenderGroup, (recti){BoardRect.Left - 5, BoardRect.Top - 5, BoardRect.Right + 5, BoardRect.Bottom + 5},
-          (colour){0xFF1B1B1B});
-
-      // {{{ Draw the board
       for (s32 Y = 0; Y < 8; Y++)
       {
         for (s32 X = 0; X < 8; X++)
         {
           u32 TileIndex = Y * 8 + X;
 
-          // NOTE(robin): Alternate tile colours
-          colour TileColour = (TileIndex + (Y & 1)) & 1 ? (colour){0xFF333333} : (colour){0xFFFFFFFF};
-
           recti Tile = {
-            XOffset + TileSize * X,
-            YOffset + TileSize * Y,
-            XOffset + TileSize * (X + 1),
-            YOffset + TileSize * (Y + 1),
+            BoardRect.Left + TileSize * X,
+            BoardRect.Top + TileSize * Y,
+            BoardRect.Left + TileSize * (X + 1),
+            BoardRect.Top + TileSize * (Y + 1),
           };
-
-          PushRect(RenderGroup, Tile, TileColour);
-
-          piece Piece = CurrentBoard[TileIndex];
 
           if (MouseLClickedIn(Tile))
           {
@@ -1029,33 +1099,14 @@ void Render(render_group* RenderGroup, recti ClipRect)
               MousePiece = NONE;
             }
           }
-
-          if (Piece)
-          {
-            recti TileRect =
-            {
-              TileMargin + Tile.Left,
-              TileMargin + Tile.Top,
-              Tile.Right - TileMargin,
-              Tile.Bottom - TileMargin,
-            };
-
-            PushBitmap(RenderGroup, &PieceBitmap[Piece], TileRect, (colour){~0L});
-          }
         }
       }
-      // }}}
+
+      PushBoard(RenderGroup, CurrentBoard, BoardRect);
 
       // {{{ NOTE(robin): Draw the move history panel
 
-      recti MoveHistoryRect =
-      {
-        BoardRect.Right + 20,
-        BoardRect.Top,
-        MoveHistoryRect.Left + 220,
-        BoardRect.Bottom,
-      };
-
+      PushRect(RenderGroup, RectBorder(MoveHistoryRect, 5), (colour){0xFF1B1B1B});
       PushRect(RenderGroup, MoveHistoryRect, (colour){0xFF1B1B1B});
       PushRect(RenderGroup, (recti){
           MoveHistoryRect.Left, MoveHistoryRect.Top, MoveHistoryRect.Right, MoveHistoryRect.Top + 100
@@ -1097,12 +1148,22 @@ void Render(render_group* RenderGroup, recti ClipRect)
         }
       }
 
+      /* TODO(robin): Think about this
+      for (auto x : BoardTiles)
+        Render(x);
+      Render(Alphalayer);
+      for (auto x : PieceBitmaps)
+        Render(x);
+      */
+
     } break;
 
     case SCENE_HISTORY:
     {
+      PushBoard(RenderGroup, LastBoard, RectWH(MenuRect.Right + 30, 30, 160, 160));
       PushStringCentred(RenderGroup,
-          (v2i){MenuRect.Right + RenderWidth/2.0, RenderHeight/2.0}, "Some match history stuff", (colour){~0U});
+          (v2i){MenuRect.Right + (RenderWidth - MenuRect.Right)/2,
+          RenderHeight/2.0}, "Some match history stuff", (colour){~0U});
     } break;
   }
 
