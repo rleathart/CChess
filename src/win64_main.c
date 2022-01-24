@@ -427,9 +427,9 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
   while (Running)
   {
     RenderGroup->Used = 0;
-    Update();
 
     MSG Message;
+    LastInput = Input;
 
     while (PeekMessage(&Message, 0, 0, 0, PM_REMOVE))
     {
@@ -464,6 +464,7 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
     recti ClientRect;
     GetClientRect(Window, (LPRECT)&ClientRect);
 
+    Update();
     Render(RenderGroup, ClientRect);
     DrawRenderGroupOpenGL(RenderGroup);
 
