@@ -407,7 +407,7 @@ PushString(render_group* RenderGroup, s32 X, s32 Y, char* Text, colour Colour)
   return Result;
 }
 
-PushBoard(render_group* RenderGroup, piece Board[64], recti Rect)
+void PushBoard(render_group* RenderGroup, piece Board[64], recti Rect)
 {
   PushRect(RenderGroup, (recti){Rect.Left - 5, Rect.Top - 5, Rect.Right + 5, Rect.Bottom + 5},
       (colour){0xFF1B1B1B});
@@ -1174,5 +1174,9 @@ void Render(render_group* RenderGroup, recti ClipRect)
           RenderHeight/2.0}, "Some match history stuff", (colour){~0U});
     } break;
   }
+
+  char Buffer[1024];
+  sprintf(Buffer, "Mouse pos: (%d, %d)", Input.Mouse.X, Input.Mouse.Y);
+  PushString(RenderGroup, 0, 0, Buffer, (colour){~0U});
 
 }
