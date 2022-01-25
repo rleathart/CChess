@@ -314,12 +314,20 @@ LRESULT MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LPar
 {
   LRESULT Result = 0;
 
+  local program_memory* Memory;
+
   switch (Message)
   {
+    case WM_CREATE:
+    {
+      CREATESTRUCTA* Create = (CREATESTRUCTA*)LParam;
+      Memory = (program_memory*)Create->lpCreateParams;
+    } break;
+
     case WM_DESTROY:
     case WM_QUIT:
     {
-      Running = 0;
+      Memory->State.Running = 0;
     } break;
 
     case WM_SIZE:
@@ -330,11 +338,11 @@ LRESULT MainWindowCallback(HWND Window, UINT Message, WPARAM WParam, LPARAM LPar
       s32 Width = ClientRect.Right - ClientRect.Left;
       s32 Height = ClientRect.Bottom - ClientRect.Top;
       Win64ResizeWindow(Width, Height);
-      if (RenderGroup)
+      if (Memory->RenderGroup)
       {
-        RenderGroup->Used = 0;
-        Render(RenderGroup, ClientRect);
-        DrawRenderGroupOpenGL(RenderGroup);
+        Memory->RenderGroup->Used = 0;
+        Render(Memory, ClientRect);
+        DrawRenderGroupOpenGL(Memory->RenderGroup);
         SwapBuffers(GetDC(Window));
       }
     } break;
@@ -356,11 +364,16 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
   GetModuleFileNameA(0, EXEFileName, sizeof(EXEFileName));
   Win64Dirname(EXEDirectory, EXEFileName);
 
-  Platform.ReadEntireFile = Win64ReadEntireFile;
-  Platform.WriteEntireFile = Win64WriteEntireFile;
-  Platform.StdOut = Win64WriteToStdOut;
-  Platform.AllocateMemory = Win64AllocateMemory;
-  Platform.DeallocateMemory = Win64DeallocateMemory;
+  // NOTE(robin): Here we are responsible for setting up Memory.Platform. Everything else is handled by Init(&Memory)
+  program_memory Memory = {0};
+  Memory.Platform.AllocateMemory = Win64AllocateMemory;
+  Memory.Platform.DeallocateMemory = Win64DeallocateMemory;
+  Memory.Platform.ReadEntireFile = Win64ReadEntireFile;
+  Memory.Platform.WriteEntireFile = Win64WriteEntireFile;
+  Memory.Platform.ExecutableFilename = EXEFileName;
+  Memory.Platform.ExecutableDirectory = EXEDirectory;
+
+  Init(&Memory);
 
   WNDCLASS WindowClass = {0};
   WindowClass.style = CS_VREDRAW|CS_HREDRAW|CS_OWNDC;
@@ -377,31 +390,23 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
       CW_USEDEFAULT,
       0, 0,
       Instance,
-      0);
+      &Memory);
 
   HDC WindowDC = GetDC(Window);
 
   Win64InitOpenGL(Window);
-  // Win64InitGlyphTable();
 
-  // SerialiseGlyphTable("assets/font.bin");
-
-  char FontPath[MAX_PATH] = {0};
-  GlyphTableP = DeserialiseGlyphTable(CatStrings(FontPath, 2, EXEDirectory, "../assets/font.bin"));
-
-  for (u32 Glyph = 0; Glyph < ArrayCount(GlyphTable); Glyph++)
+  for (u32 Glyph = 0; Glyph < 256; Glyph++)
   {
-    glGenTextures(1, &GlyphTableP[Glyph].TextureHandle);
-    glBindTexture(GL_TEXTURE_2D, GlyphTableP[Glyph].TextureHandle);
+    glGenTextures(1, &GlyphTable[Glyph].TextureHandle);
+    glBindTexture(GL_TEXTURE_2D, GlyphTable[Glyph].TextureHandle);
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, GlyphTableP[Glyph].Width, GlyphTableP[Glyph].Height,
-        0, GL_BGRA_EXT, GL_UNSIGNED_BYTE, GlyphTableP[Glyph].Pixels);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, GlyphTable[Glyph].Width, GlyphTable[Glyph].Height,
+        0, GL_BGRA_EXT, GL_UNSIGNED_BYTE, GlyphTable[Glyph].Pixels);
     glBindTexture(GL_TEXTURE_2D, 0);
   }
-
-  RenderGroup = AllocateRenderGroup(Megabytes(8));
 
   // NOTE(robin): Read our piece bitmaps and upload them to the GPU
   for (u32 Piece = NONE; Piece < CHESS_PIECE_COUNT; Piece++)
@@ -421,16 +426,11 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
     VirtualFree(PieceBitmap[Piece].Pixels, 0, MEM_RELEASE);
   }
 
-  CopyArray(CurrentBoard, DefaultBoard);
-  CopyArray(LastBoard, DefaultBoard);
-
-  while (Running)
+  while (Memory.State.Running)
   {
-    RenderGroup->Used = 0;
+    Memory.LastInput = Memory.Input;
 
     MSG Message;
-    LastInput = Input;
-
     while (PeekMessage(&Message, 0, 0, 0, PM_REMOVE))
     {
       LPARAM LParam = Message.lParam;
@@ -439,18 +439,18 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
       {
         case WM_MOUSEMOVE:
         {
-          Input.Mouse.X = GET_X_LPARAM(LParam);
-          Input.Mouse.Y = GET_Y_LPARAM(LParam);
+          Memory.Input.Mouse.X = GET_X_LPARAM(LParam);
+          Memory.Input.Mouse.Y = GET_Y_LPARAM(LParam);
         } break;
 
         case WM_LBUTTONDOWN:
         {
-          Input.Mouse.LButtonDown = 1;
+          Memory.Input.Mouse.LButtonDown = 1;
         } break;
 
         case WM_LBUTTONUP:
         {
-          Input.Mouse.LButtonDown = 0;
+          Memory.Input.Mouse.LButtonDown = 0;
         } break;
 
         default:
@@ -464,9 +464,10 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
     recti ClientRect;
     GetClientRect(Window, (LPRECT)&ClientRect);
 
-    Update();
-    Render(RenderGroup, ClientRect);
-    DrawRenderGroupOpenGL(RenderGroup);
+    Memory.RenderGroup->Used = 0;
+    Update(&Memory);
+    Render(&Memory, ClientRect);
+    DrawRenderGroupOpenGL(Memory.RenderGroup);
 
     SwapBuffers(WindowDC);
   }
