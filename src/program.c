@@ -1272,6 +1272,8 @@ void Init(program_memory* Memory)
 
   CopyArray(Memory->State.CurrentBoard, DefaultBoard);
   CopyArray(Memory->State.LastBoard, DefaultBoard);
+  for (u32 i = 0; i < ArrayCount(Memory->State.CanCastle); i++)
+    Memory->State.CanCastle[i] = 1;
 
   Memory->State.Running = 1;
 }
