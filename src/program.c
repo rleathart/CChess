@@ -13,16 +13,23 @@
 #define local static
 #define internal static
 
-// typedef char* va_list;
-// #define PtrAlignedSizeOf(Type) ((sizeof(Type) + sizeof(int*) - 1) & ~(sizeof(int*) - 1))
-// #define VAStart(ArgPtr, LastNamedArg) (ArgPtr = (va_list)&LastNamedArg + PtrAlignedSizeOf(LastNamedArg))
-// #define VAGet(ArgPtr, Type) (*(Type*)((ArgPtr += PtrAlignedSizeOf(Type)) - PtrAlignedSizeOf(Type)))
-// #define VAEnd(ArgPtr) (ArgPtr = 0)
+#if _WIN64 // TODO(robin): Make this cleaner
 
+typedef char* va_list;
+#define PtrAlignedSizeOf(Type) ((sizeof(Type) + sizeof(int*) - 1) & ~(sizeof(int*) - 1))
+#define VAStart(ArgPtr, LastNamedArg) (ArgPtr = (va_list)&LastNamedArg + PtrAlignedSizeOf(LastNamedArg))
+#define VAGet(ArgPtr, Type) (*(Type*)((ArgPtr += PtrAlignedSizeOf(Type)) - PtrAlignedSizeOf(Type)))
+#define VAEnd(ArgPtr) (ArgPtr = 0)
+
+#else
+
+// NOTE(robin): Difficult to get around including stdarg on mac
 #define VAStart va_start
 #define VAGet va_arg
 #define VAEnd va_end
 #define inline static inline
+
+#endif
 
 typedef unsigned char u8;
 typedef unsigned short u16;
@@ -1243,10 +1250,6 @@ void Render(program_memory* Memory, recti ClipRect)
           RenderHeight/2.0}, "Some match history stuff", (colour){~0U});
     } break;
   }
-
-  char Buffer[1024];
-  sprintf(Buffer, "Mouse pos: (%d, %d)", Memory->Input.Mouse.X, Memory->Input.Mouse.Y);
-  PushString(RenderGroup, 0, 0, Buffer, (colour){~0U});
 
 }
 
