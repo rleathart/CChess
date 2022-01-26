@@ -128,7 +128,24 @@ void MacResizeWindow(NSWindow* Window)
   [GLContext update];
 }
 
-global NSOpenGLContext* GlobalGLContext;
+char* MacDirname(char* OutPath, char* Path)
+{
+  char* OnePastLastSlash = Path;
+  for (char* Scan = Path; *Scan; ++Scan)
+  {
+    if (*Scan == '/')
+    {
+      OnePastLastSlash = Scan + 1;
+    }
+  }
+  CopyMemory(OutPath, Path, OnePastLastSlash - Path);
+
+  OutPath[OnePastLastSlash - Path] = 0;
+
+  return OutPath;
+}
+
+global program_memory Memory;
 
 @interface main_application_delegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
 @end
@@ -142,7 +159,7 @@ global NSOpenGLContext* GlobalGLContext;
 
 - (void)windowWillClose:(id)sender
 {
-  Running = false;
+  Memory.State.Running = false;
 }
 
 @end
@@ -189,16 +206,20 @@ int main(int argc, char** argv)
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-  Platform.AllocateMemory = (platform_allocate_memory*)malloc;
-  Platform.ReadEntireFile = MacReadEntireFile;
-  RenderGroup = AllocateRenderGroup(Megabytes(8));
+  Memory = (program_memory){0};
+  Memory.Platform.AllocateMemory = (platform_allocate_memory*)malloc;
+  Memory.Platform.ReadEntireFile = MacReadEntireFile;
+  char EXEDirectory[2048];
+  Memory.Platform.ExecutableFilename = (char*)[NSRunningApplication.currentApplication.executableURL fileSystemRepresentation];
+  Memory.Platform.ExecutableDirectory = MacDirname(EXEDirectory, Memory.Platform.ExecutableFilename);
 
-  CopyArray(CurrentBoard, DefaultBoard);
-  CopyArray(LastBoard, DefaultBoard);
+  Init(&Memory);
 
   for (u32 Piece = NONE; Piece < CHESS_PIECE_COUNT; Piece++)
   {
-    PieceBitmap[Piece] = ReadBitmap((char*)PieceAsset[Piece]);
+    char BitmapPath[1024] = {0};
+    PieceBitmap[Piece] = ReadBitmap(CatStrings(BitmapPath, 3,
+          Memory.Platform.ExecutableDirectory, "../", (char*)PieceAsset[Piece]));
     PieceBitmap[Piece].Transform = FLIP_VERTICAL;
     glGenTextures(1, &PieceBitmap[Piece].TextureHandle);
     glBindTexture(GL_TEXTURE_2D, PieceBitmap[Piece].TextureHandle);
@@ -210,27 +231,23 @@ int main(int argc, char** argv)
     glBindTexture(GL_TEXTURE_2D, 0);
   }
 
-  char FontPath[260] = {0};
-  GlyphTableP = DeserialiseGlyphTable(CatStrings(FontPath, 2,
-        "/Users/Robin/src/clones/CChess", "/assets/font.bin"));
-
-  for (u32 Glyph = 0; Glyph < ArrayCount(GlyphTable); Glyph++)
+  for (u32 Glyph = 0; Glyph < 256; Glyph++)
   {
-    glGenTextures(1, &GlyphTableP[Glyph].TextureHandle);
-    glBindTexture(GL_TEXTURE_2D, GlyphTableP[Glyph].TextureHandle);
+    glGenTextures(1, &GlyphTable[Glyph].TextureHandle);
+    glBindTexture(GL_TEXTURE_2D, GlyphTable[Glyph].TextureHandle);
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, GlyphTableP[Glyph].Width, GlyphTableP[Glyph].Height,
-        0, GL_BGRA_EXT, GL_UNSIGNED_BYTE, GlyphTableP[Glyph].Pixels);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, GlyphTable[Glyph].Width, GlyphTable[Glyph].Height,
+        0, GL_BGRA_EXT, GL_UNSIGNED_BYTE, GlyphTable[Glyph].Pixels);
     glBindTexture(GL_TEXTURE_2D, 0);
   }
 
   MacResizeWindow(Window);
 
-  while (Running)
+  while (Memory.State.Running)
   {
-    LastInput = Input;
+    Memory.LastInput = Memory.Input;
 
     NSEvent* Event;
     do
@@ -250,13 +267,12 @@ int main(int argc, char** argv)
 
             if (NSPointInRect(Mouse, Window.frame))
             {
-              NSRect RectInWindow =
+              NSRect WindowRect =
                 [Window convertRectFromScreen:NSMakeRect(Mouse.x, Mouse.y, 1, 1)];
-              NSPoint PointInWindow = RectInWindow.origin;
-              Mouse = [[Window contentView] convertPoint:PointInWindow fromView:nil];
+              Mouse = [[Window contentView] convertPoint:WindowRect.origin fromView:nil];
 
-              Input.Mouse.X = Mouse.x;
-              Input.Mouse.Y = Window.contentView.bounds.size.height - Mouse.y;
+              Memory.Input.Mouse.X = Mouse.x;
+              Memory.Input.Mouse.Y = Window.contentView.bounds.size.height - Mouse.y;
             }
 
             [NSApp sendEvent: Event];
@@ -264,13 +280,13 @@ int main(int argc, char** argv)
 
         case NSEventTypeLeftMouseUp:
           {
-            Input.Mouse.LButtonDown = 0;
+            Memory.Input.Mouse.LButtonDown = 0;
             [NSApp sendEvent: Event];
           } break;
 
         case NSEventTypeLeftMouseDown:
           {
-            Input.Mouse.LButtonDown = 1;
+            Memory.Input.Mouse.LButtonDown = 1;
             [NSApp sendEvent: Event];
           } break;
 
@@ -285,10 +301,10 @@ int main(int argc, char** argv)
 
     recti ClipRect = {0, 0, Width, Height};
 
-    Update();
-    RenderGroup->Used = 0;
-    Render(RenderGroup, ClipRect);
-    DrawRenderGroupOpenGL(RenderGroup);
+    Update(&Memory);
+    Memory.RenderGroup->Used = 0;
+    Render(&Memory, ClipRect);
+    DrawRenderGroupOpenGL(Memory.RenderGroup);
 
     [GLContext flushBuffer];
   }

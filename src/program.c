@@ -323,7 +323,7 @@ global const piece DefaultBoard[] = {
 };
 
 inline b32 InRect(v2i Coord, recti Quad);
-inline b32 MouseLClickedIn(recti Rect);
+inline b32 MouseLClickedIn(program_memory*, recti Rect);
 
 internal void*
 CopyMemory(void* DestInit, void* SourceInit, umm Size)
@@ -578,7 +578,7 @@ void SerialiseGlyphTable(char* Filename)
   umm BytesToWrite = 0;
 
   // NOTE(robin): Compute how much memory we need
-  for (u32 Glyph = 0; Glyph < ArrayCount(GlyphTable); Glyph++)
+  for (u32 Glyph = 0; Glyph < 256; Glyph++)
   {
     BytesToWrite += sizeof(GlyphTable[0]);
     BytesToWrite += GlyphTable[Glyph].Width * GlyphTable[Glyph].Height * 4;
@@ -587,7 +587,7 @@ void SerialiseGlyphTable(char* Filename)
   byte* Data = Platform.AllocateMemory(BytesToWrite);
   byte* Base = Data;
 
-  for (u32 Glyph = 0; Glyph < ArrayCount(GlyphTable); Glyph++)
+  for (u32 Glyph = 0; Glyph < 256; Glyph++)
   {
     loaded_bitmap Bitmap = GlyphTable[Glyph];
     CopyMemory(Base, &Bitmap, sizeof(Bitmap));
@@ -1245,7 +1245,7 @@ void Render(program_memory* Memory, recti ClipRect)
   }
 
   char Buffer[1024];
-  sprintf(Buffer, "Mouse pos: (%d, %d)", Input.Mouse.X, Input.Mouse.Y);
+  sprintf(Buffer, "Mouse pos: (%d, %d)", Memory->Input.Mouse.X, Memory->Input.Mouse.Y);
   PushString(RenderGroup, 0, 0, Buffer, (colour){~0U});
 
 }
