@@ -157,7 +157,7 @@ int main(int argc, char** argv)
   [NSApp finishLaunching];
 
   NSRect ScreenRect = [[NSScreen mainScreen] frame];
-  NSRect Frame = NSMakeRect(0, 0, 1024, 768);
+  NSRect Frame = NSMakeRect(0, 0, 1280, 720);
   NSWindow* Window = [[NSWindow alloc] initWithContentRect:Frame
                                                  styleMask:NSWindowStyleMaskTitled
                                                  | NSWindowStyleMaskClosable
