@@ -230,6 +230,38 @@ typedef struct
   b32 Hovered;
 } do_button_result;
 
+typedef struct
+{
+  umm Size;
+  umm Used;
+
+  byte* Base;
+} memory_arena;
+
+typedef struct
+{
+  u32 Size;
+  u32 Count;
+
+  move* Moves;
+} move_history_array;
+
+typedef struct
+{
+  b32 Running;
+
+  piece CurrentBoard[64];
+  piece LastBoard[64]; // NOTE(robin): Board last frame
+  piece MousePiece; // NOTE(robin): Piece currently being held by the mouse
+  u32 LastMouseTileIndex; // NOTE(robin): The last tile index that the user interacted with
+
+  s32 EnPassantTileIndex;
+  b32 CanCastle[4]; // NOTE(robin): BlackQueenSide, WhiteQueenSide, BlackKingSide, WhiteKingSide
+
+  b32 WhiteToMove;
+  move_history_array MoveHistory;
+} program_state;
+
 typedef entire_file platform_read_entire_file(char*);
 typedef b32 platform_write_entire_file(char*, void*, umm);
 typedef void platform_write_to_std_out(char*);
@@ -243,17 +275,26 @@ typedef struct
   platform_write_to_std_out* StdOut;
   platform_allocate_memory* AllocateMemory;
   platform_deallocate_memory* DeallocateMemory;
+
+  char* ExecutableFilename;
+  char* ExecutableDirectory;
 } platform_api;
 
-global b32 Running = 1;
-global piece MousePiece;
-global u32 LastMouseTileIndex;
-global render_group* RenderGroup;
+typedef struct
+{
+  memory_arena PermArena;
 
-global program_input Input;
-global program_input LastInput;
+  platform_api Platform;
+  program_state State;
+  program_input Input;
+  program_input LastInput;
+
+  loaded_bitmap* GlyphTable;
+  render_group* RenderGroup;
+} program_memory;
 
 global platform_api Platform;
+global loaded_bitmap* GlyphTable;
 global const char* const PieceAsset[] = { // TODO(robin): Maybe factor this into a function with a local lookup
   [NONE]   = "assets/blank.bmp",
   [PAWN_W] = "assets/piece_white_pawn.bmp",
@@ -270,8 +311,6 @@ global const char* const PieceAsset[] = { // TODO(robin): Maybe factor this into
   [NITE_B] = "assets/piece_black_knight.bmp",
 };
 global loaded_bitmap PieceBitmap[ArrayCount(PieceAsset)];
-global loaded_bitmap GlyphTable[256];
-global loaded_bitmap* GlyphTableP = GlyphTable;
 global const piece DefaultBoard[] = {
   ROOK_B, NITE_B, BISH_B, QUEN_B, KING_B, BISH_B, NITE_B, ROOK_B,
   PAWN_B, PAWN_B, PAWN_B, PAWN_B, PAWN_B, PAWN_B, PAWN_B, PAWN_B,
@@ -282,10 +321,6 @@ global const piece DefaultBoard[] = {
   PAWN_W, PAWN_W, PAWN_W, PAWN_W, PAWN_W, PAWN_W, PAWN_W, PAWN_W,
   ROOK_W, NITE_W, BISH_W, QUEN_W, KING_W, BISH_W, NITE_W, ROOK_W,
 };
-global s32 EnPassantTileIndex = -1;
-global b32 CanCastle[4] = {1, 1, 1, 1}; // NOTE(robin): BlackQueenSide, WhiteQueenSide, BlackKingSide, WhiteKingSide
-global piece LastBoard[64];
-global piece CurrentBoard[64];
 
 inline b32 InRect(v2i Coord, recti Quad);
 inline b32 MouseLClickedIn(recti Rect);
@@ -298,6 +333,21 @@ CopyMemory(void* DestInit, void* SourceInit, umm Size)
   while (Size--) *Dest++ = *Source++;
 
   return(DestInit);
+}
+
+#define PushType(Arena, Type) (Type*)PushSize(Arena, sizeof(Type))
+#define PushArray(Arena, Type, Count) (Type*)PushSize(Arena, (Count)*sizeof(Type))
+
+inline void*
+PushSize(memory_arena* Arena, umm Size)
+{
+  // TODO(robin): Alignment
+  Assert(Arena->Used + Size <= Arena->Size);
+
+  void* Result = Arena->Base + Arena->Used;
+  Arena->Used += Size;
+
+  return Result;
 }
 
 internal render_group*
@@ -389,7 +439,7 @@ PushString(render_group* RenderGroup, s32 X, s32 Y, char* Text, colour Colour)
   byte* Result = RenderGroup->Buffer + RenderGroup->Used;
   for (;*Text; Text++)
   {
-    loaded_bitmap* Glyph = &GlyphTableP[*Text];
+    loaded_bitmap* Glyph = &GlyphTable[*Text];
     render_entry_header Header = {RENDER_BITMAP};
     render_entry_bitmap Entry = {X, Y, X + (s32)Glyph->Width, Y + (s32)Glyph->Height, Colour, Glyph};
     X += Glyph->Width;
@@ -470,7 +520,7 @@ TextRect(char* Text)
 
   for (;*Text; Text++)
   {
-    loaded_bitmap* Glyph = &GlyphTableP[*Text];
+    loaded_bitmap* Glyph = &GlyphTable[*Text];
     Result.Right += Glyph->Width;
     if (Glyph->Height > Result.Bottom)
       Result.Bottom = Glyph->Height;
@@ -507,12 +557,13 @@ PushButton(render_group* RenderGroup, recti Rect, char* Text, colour ButtonColou
 }
 
 internal do_button_result
-DoButton(render_group* RenderGroup, button Button)
+DoButton(program_memory* Memory, button Button)
 {
+  render_group* RenderGroup = Memory->RenderGroup;
   do_button_result Result = {0};
 
-  Result.LClicked = MouseLClickedIn(Button.Rect);
-  Result.Hovered = InRect(Input.Mouse.XY, Button.Rect);
+  Result.LClicked = MouseLClickedIn(Memory, Button.Rect);
+  Result.Hovered = InRect(Memory->Input.Mouse.XY, Button.Rect);
 
   colour ButtonColour = Result.Hovered ? Button.HoveredColour : Button.Colour;
   colour TextColour = Result.Hovered ? Button.HoveredTextColour : Button.TextColour;
@@ -552,21 +603,18 @@ void SerialiseGlyphTable(char* Filename)
   Platform.DeallocateMemory(Data);
 }
 
-loaded_bitmap* DeserialiseGlyphTable(char* Filename)
+void DeserialiseGlyphTable(loaded_bitmap* GlyphTable, char* Filename)
 {
-  loaded_bitmap* Result = GlyphTableP;
   byte* Data = Platform.ReadEntireFile(Filename).Data;
   byte* Base = Data;
 
-  for (u32 Glyph = 0; Glyph < ArrayCount(GlyphTable); Glyph++)
+  for (u32 Glyph = 0; Glyph < 256; Glyph++)
   {
     loaded_bitmap* Bitmap = (loaded_bitmap*)Base + Glyph;
     Bitmap->Pixels = (byte*)(Bitmap + 1);
     Base += Bitmap->Width * Bitmap->Height * 4;
-    Result[Glyph] = *Bitmap;
+    GlyphTable[Glyph] = *Bitmap;
   }
-
-  return Result;
 }
 
 inline u64 StringLength(char* String)
@@ -618,33 +666,33 @@ inline b32 InRect(v2i Coord, recti Quad)
   return Result;
 }
 
-inline b32 MouseLReleased(void)
+inline b32 MouseLReleased(program_memory* Memory)
 {
-  b32 Result = LastInput.Mouse.LButtonDown && !Input.Mouse.LButtonDown;
+  b32 Result = Memory->LastInput.Mouse.LButtonDown && !Memory->Input.Mouse.LButtonDown;
   return Result;
 }
 
-inline b32 MouseLReleasedIn(recti Rect)
+inline b32 MouseLReleasedIn(program_memory* Memory, recti Rect)
 {
-  b32 Result = MouseLReleased() && InRect(Input.Mouse.XY, Rect);
+  b32 Result = MouseLReleased(Memory) && InRect(Memory->Input.Mouse.XY, Rect);
   return Result;
 }
 
-inline b32 MouseLReleasedOutside(recti Rect)
+inline b32 MouseLReleasedOutside(program_memory* Memory, recti Rect)
 {
-  b32 Result = MouseLReleased() && !InRect(Input.Mouse.XY, Rect);
+  b32 Result = MouseLReleased(Memory) && !InRect(Memory->Input.Mouse.XY, Rect);
   return Result;
 }
 
-inline b32 MouseLClicked(void)
+inline b32 MouseLClicked(program_memory* Memory)
 {
-  b32 Result = Input.Mouse.LButtonDown && !LastInput.Mouse.LButtonDown;
+  b32 Result = Memory->Input.Mouse.LButtonDown && !Memory->LastInput.Mouse.LButtonDown;
   return Result;
 }
 
-inline b32 MouseLClickedIn(recti Rect)
+inline b32 MouseLClickedIn(program_memory* Memory, recti Rect)
 {
-  b32 Result = MouseLClicked() && InRect(Input.Mouse.XY, Rect);
+  b32 Result = MouseLClicked(Memory) && InRect(Memory->Input.Mouse.XY, Rect);
   return Result;
 }
 
@@ -675,18 +723,18 @@ inline b32 IsWhite(piece Piece)
   return Result;
 }
 
-inline b32 IsSelfCapture(u8 SourceTileIndex, u8 TargetTileIndex)
+inline b32 IsSelfCapture(program_state* State, u8 SourceTileIndex, u8 TargetTileIndex)
 {
   // TODO(robin): Fix using MousePiece everywhere!!!
-  piece SourcePiece = MousePiece;
-  piece TargetPiece = CurrentBoard[TargetTileIndex];
+  piece SourcePiece = State->MousePiece;
+  piece TargetPiece = State->CurrentBoard[TargetTileIndex];
 
   b32 Result = !(TargetPiece == NONE || (IsWhite(SourcePiece) != IsWhite(TargetPiece)));
 
   return Result;
 }
 
-move_array GetMoves(u8 TileIndex)
+move_array GetMoves(program_state* State, u8 TileIndex)
 {
   move_array Result = {0};
 
@@ -694,7 +742,7 @@ move_array GetMoves(u8 TileIndex)
   s32 File = TileIndex >> 3; // TileIndex / 8;
   u8 TileIndex88 = Pos88(TileIndex);
 
-  piece SourcePiece = MousePiece;
+  piece SourcePiece = State->MousePiece;
 
   // TODO(robin): en passant and check
   switch (SourcePiece)
@@ -709,18 +757,18 @@ move_array GetMoves(u8 TileIndex)
       u8 Tile1Ahead = TileIndex + DirectionModifier * 8;
       u8 Tile2Ahead = TileIndex + DirectionModifier * 16;
 
-      b32 CanMove1Square = CurrentBoard[Tile1Ahead] == NONE;
-      b32 CanMove2Squares = CanMove1Square && File == DoubleMoveFile && CurrentBoard[Tile2Ahead] == NONE;
+      b32 CanMove1Square = State->CurrentBoard[Tile1Ahead] == NONE;
+      b32 CanMove2Squares = CanMove1Square && File == DoubleMoveFile && State->CurrentBoard[Tile2Ahead] == NONE;
 
       if (CanMove1Square)
       {
-        if (!IsSelfCapture(TileIndex, Tile1Ahead))
+        if (!IsSelfCapture(State, TileIndex, Tile1Ahead))
           Result.Moves[Result.Count++] = (move){TileIndex, Tile1Ahead};
       }
 
       if (CanMove2Squares)
       {
-        if (!IsSelfCapture(TileIndex, Tile2Ahead))
+        if (!IsSelfCapture(State, TileIndex, Tile2Ahead))
           Result.Moves[Result.Count++] = (move){TileIndex, Tile2Ahead};
       }
 
@@ -731,7 +779,7 @@ move_array GetMoves(u8 TileIndex)
         if (!(TargetIndex88 & 0x88))
         {
           u8 TargetIndex = Pos64(TargetIndex88);
-          b32 CanCapture = CurrentBoard[TargetIndex] && !IsSelfCapture(TileIndex, TargetIndex);
+          b32 CanCapture = State->CurrentBoard[TargetIndex] && !IsSelfCapture(State, TileIndex, TargetIndex);
 
           if (CanCapture)
           {
@@ -754,7 +802,7 @@ move_array GetMoves(u8 TileIndex)
         if (!(TargetIndex88 & 0x88))
         {
           u8 TargetIndex = Pos64(TargetIndex88);
-          if (!IsSelfCapture(TileIndex, TargetIndex))
+          if (!IsSelfCapture(State, TileIndex, TargetIndex))
             Result.Moves[Result.Count++] = (move){TileIndex, TargetIndex};
         }
       }
@@ -795,10 +843,10 @@ move_array GetMoves(u8 TileIndex)
         while (!(TargetIndex88 & 0x88))
         {
           u8 TargetIndex = Pos64(TargetIndex88);
-          if (!IsSelfCapture(TileIndex, TargetIndex))
+          if (!IsSelfCapture(State, TileIndex, TargetIndex))
             Result.Moves[Result.Count++] = (move){TileIndex, TargetIndex};
 
-          if (CurrentBoard[TargetIndex])
+          if (State->CurrentBoard[TargetIndex])
             break; // NOTE(robin): Moving to this tile will take a piece so we stop
 
           TargetIndex88 += SlideOffset[i];
@@ -818,9 +866,9 @@ move_array GetMoves(u8 TileIndex)
     for (s32 KingSide = 0; KingSide < 2; KingSide++)
     {
       b32 CastleInCorner =
-        CurrentBoard[KingSide ? White ? 63 : 7 : White ? 56 : 0] == (White ? ROOK_W : ROOK_B);
+        State->CurrentBoard[KingSide ? White ? 63 : 7 : White ? 56 : 0] == (White ? ROOK_W : ROOK_B);
 
-      if (CanCastle[White + 2 * KingSide] && CastleInCorner)
+      if (State->CanCastle[White + 2 * KingSide] && CastleInCorner)
       {
         b32 CastleIsValid = 1;
         s32 DirectionModifier = KingSide ? 1 : -1;
@@ -828,7 +876,7 @@ move_array GetMoves(u8 TileIndex)
         {
           s32 TargetIndex = TileIndex + DirectionModifier * i;
 
-          if (CurrentBoard[TargetIndex] != NONE)
+          if (State->CurrentBoard[TargetIndex] != NONE)
             CastleIsValid = 0;
         }
 
@@ -845,11 +893,11 @@ move_array GetMoves(u8 TileIndex)
   return Result;
 }
 
-inline b32 LegalMove(u8 From, u8 To)
+inline b32 LegalMove(program_state* State, u8 From, u8 To)
 {
   b32 Result = 0;
 
-  move_array Moves = GetMoves(From);
+  move_array Moves = GetMoves(State, From);
   for (u32 MoveIndex = 0; MoveIndex < Moves.Count; MoveIndex++)
   {
     move Move = Moves.Moves[MoveIndex];
@@ -908,48 +956,64 @@ RectWH(s32 X, s32 Y, u32 Width, u32 Height)
   return Result;
 }
 
-void Update(void)
+b32 MoveMade(piece LastBoard[64], piece CurrentBoard[64])
+{
+  b32 Result = 0;
+
+  for (u32 i = 0; i < 64; i++)
+  {
+    if (LastBoard[i] != CurrentBoard[i])
+    {
+      Result = 1;
+      break;
+    }
+  }
+
+  return Result;
+}
+
+void Update(program_memory* Memory)
 {
   // NOTE(robin): Don't update boards if we're holding a piece
-  if (!MousePiece)
+  if (!Memory->State.MousePiece)
   {
     // TODO(robin): Fix this scuffed ass code
     b32 CastledKingSide[2] = {
-      LastBoard[4] == KING_B && CurrentBoard[6] == KING_B,
-      LastBoard[60] == KING_W && CurrentBoard[62] == KING_W,
+      Memory->State.LastBoard[4] == KING_B && Memory->State.CurrentBoard[6] == KING_B,
+      Memory->State.LastBoard[60] == KING_W && Memory->State.CurrentBoard[62] == KING_W,
     };
     b32 CastledQueenSide[2] = {
-      LastBoard[4] == KING_B && CurrentBoard[2] == KING_B,
-      LastBoard[60] == KING_W && CurrentBoard[58] == KING_W,
+      Memory->State.LastBoard[4] == KING_B && Memory->State.CurrentBoard[2] == KING_B,
+      Memory->State.LastBoard[60] == KING_W && Memory->State.CurrentBoard[58] == KING_W,
     };
 
     b32 RookMoved[4] = {
-      LastBoard[0] == ROOK_B && CurrentBoard[0] != ROOK_B,
-      LastBoard[56] == ROOK_W && CurrentBoard[56] != ROOK_W,
-      LastBoard[7] == ROOK_B && CurrentBoard[7] != ROOK_B,
-      LastBoard[63] == ROOK_W && CurrentBoard[63] != ROOK_W,
+      Memory->State.LastBoard[0] == ROOK_B && Memory->State.CurrentBoard[0] != ROOK_B,
+      Memory->State.LastBoard[56] == ROOK_W && Memory->State.CurrentBoard[56] != ROOK_W,
+      Memory->State.LastBoard[7] == ROOK_B && Memory->State.CurrentBoard[7] != ROOK_B,
+      Memory->State.LastBoard[63] == ROOK_W && Memory->State.CurrentBoard[63] != ROOK_W,
     };
 
     b32 KingMoved[2] = {
-      LastBoard[4] == KING_B && CurrentBoard[4] != KING_B,
-      LastBoard[60] == KING_W && CurrentBoard[60] != KING_W,
+      Memory->State.LastBoard[4] == KING_B && Memory->State.CurrentBoard[4] != KING_B,
+      Memory->State.LastBoard[60] == KING_W && Memory->State.CurrentBoard[60] != KING_W,
     };
 
     if (KingMoved[0])
     {
-      CanCastle[0] = CanCastle[2] = 0;
+      Memory->State.CanCastle[0] = Memory->State.CanCastle[2] = 0;
     }
 
     if (KingMoved[1])
     {
-      CanCastle[1] = CanCastle[3] = 0;
+      Memory->State.CanCastle[1] = Memory->State.CanCastle[3] = 0;
     }
 
-    for (u32 i = 0; i < ArrayCount(CanCastle); i++)
+    for (u32 i = 0; i < ArrayCount(Memory->State.CanCastle); i++)
     {
       if (RookMoved[i])
       {
-        CanCastle[i] = 0;
+        Memory->State.CanCastle[i] = 0;
       }
     }
 
@@ -957,27 +1021,32 @@ void Update(void)
     {
       if (CastledKingSide[White])
       {
-        CurrentBoard[White ? 63 : 7] = NONE;
-        CurrentBoard[White ? 61 : 5] = White ? ROOK_W : ROOK_B;
-        CanCastle[White + 2] = 0;
-        CanCastle[White] = 0;
+        Memory->State.CurrentBoard[White ? 63 : 7] = NONE;
+        Memory->State.CurrentBoard[White ? 61 : 5] = White ? ROOK_W : ROOK_B;
+        Memory->State.CanCastle[White + 2] = 0;
+        Memory->State.CanCastle[White] = 0;
       }
 
       if (CastledQueenSide[White])
       {
-        CurrentBoard[White ? 56 : 0] = NONE;
-        CurrentBoard[White ? 59 : 3] = White ? ROOK_W : ROOK_B;
-        CanCastle[White + 2] = 0;
-        CanCastle[White] = 0;
+        Memory->State.CurrentBoard[White ? 56 : 0] = NONE;
+        Memory->State.CurrentBoard[White ? 59 : 3] = White ? ROOK_W : ROOK_B;
+        Memory->State.CanCastle[White + 2] = 0;
+        Memory->State.CanCastle[White] = 0;
       }
     }
 
-    CopyArray(LastBoard, CurrentBoard);
+    if (MoveMade(Memory->State.LastBoard, Memory->State.CurrentBoard))
+    {
+    }
+
+    CopyArray(Memory->State.LastBoard, Memory->State.CurrentBoard);
   }
 }
 
-void Render(render_group* RenderGroup, recti ClipRect)
+void Render(program_memory* Memory, recti ClipRect)
 {
+  render_group* RenderGroup = Memory->RenderGroup;
   s32 RenderWidth = ClipRect.Right - ClipRect.Left;
   s32 RenderHeight = ClipRect.Bottom - ClipRect.Top;
 
@@ -1026,7 +1095,7 @@ void Render(render_group* RenderGroup, recti ClipRect)
   for (u32 ButtonIndex = 0; ButtonIndex < ButtonCount; ButtonIndex++)
   {
     button* Button = &Buttons[ButtonIndex];
-    do_button_result ButtonResult = DoButton(RenderGroup, *Button);
+    do_button_result ButtonResult = DoButton(Memory, *Button);
 
     if (ButtonResult.LClicked)
     {
@@ -1068,10 +1137,10 @@ void Render(render_group* RenderGroup, recti ClipRect)
       };
 
       // NOTE(robin): Put the staged piece back if we release the mouse outside the board
-      if (MouseLReleasedOutside(BoardRect) && MousePiece)
+      if (MouseLReleasedOutside(Memory, BoardRect) && Memory->State.MousePiece)
       {
-        CurrentBoard[LastMouseTileIndex] = MousePiece;
-        MousePiece = NONE;
+        Memory->State.CurrentBoard[Memory->State.LastMouseTileIndex] = Memory->State.MousePiece;
+        Memory->State.MousePiece = NONE;
       }
 
       for (s32 Y = 0; Y < 8; Y++)
@@ -1087,30 +1156,30 @@ void Render(render_group* RenderGroup, recti ClipRect)
             BoardRect.Top + TileSize * (Y + 1),
           };
 
-          if (MouseLClickedIn(Tile))
+          if (MouseLClickedIn(Memory, Tile))
           {
-            MousePiece = CurrentBoard[TileIndex];
-            CurrentBoard[TileIndex] = NONE;
-            LastMouseTileIndex = TileIndex;
+            Memory->State.MousePiece = Memory->State.CurrentBoard[TileIndex];
+            Memory->State.CurrentBoard[TileIndex] = NONE;
+            Memory->State.LastMouseTileIndex = TileIndex;
           }
 
-          if (MouseLReleasedIn(Tile))
+          if (MouseLReleasedIn(Memory, Tile))
           {
-            if (LegalMove(LastMouseTileIndex, TileIndex))
+            if (LegalMove(&Memory->State, Memory->State.LastMouseTileIndex, TileIndex))
             {
-              CurrentBoard[TileIndex] = MousePiece;
-              MousePiece = NONE;
+              Memory->State.CurrentBoard[TileIndex] = Memory->State.MousePiece;
+              Memory->State.MousePiece = NONE;
             }
             else
             {
-              CurrentBoard[LastMouseTileIndex] = MousePiece;
-              MousePiece = NONE;
+              Memory->State.CurrentBoard[Memory->State.LastMouseTileIndex] = Memory->State.MousePiece;
+              Memory->State.MousePiece = NONE;
             }
           }
         }
       }
 
-      PushBoard(RenderGroup, CurrentBoard, BoardRect);
+      PushBoard(RenderGroup, Memory->State.CurrentBoard, BoardRect);
 
       // {{{ NOTE(robin): Draw the move history panel
 
@@ -1127,20 +1196,20 @@ void Render(render_group* RenderGroup, recti ClipRect)
 
       // NOTE(robin): The texture lags the cursor a bit because the window callback is not called every frame.
 
-      if (MousePiece) // NOTE(robin): We're holding a piece with the mouse
+      if (Memory->State.MousePiece) // NOTE(robin): We're holding a piece with the mouse
       {
         // NOTE(robin): Draw the piece bitmap over the cursor
         recti BitmapRect = {
-          Input.Mouse.X - TileSize/2 + TileMargin,
-          Input.Mouse.Y - TileSize/2 + TileMargin,
-          Input.Mouse.X + TileSize/2 - TileMargin,
-          Input.Mouse.Y + TileSize/2 - TileMargin,
+          Memory->Input.Mouse.X - TileSize/2 + TileMargin,
+          Memory->Input.Mouse.Y - TileSize/2 + TileMargin,
+          Memory->Input.Mouse.X + TileSize/2 - TileMargin,
+          Memory->Input.Mouse.Y + TileSize/2 - TileMargin,
         };
 
-        PushBitmap(RenderGroup, &PieceBitmap[MousePiece], BitmapRect, (colour){~0U});
+        PushBitmap(RenderGroup, &PieceBitmap[Memory->State.MousePiece], BitmapRect, (colour){~0U});
 
         // NOTE(robin): Also highlight the possible moves in red
-        move_array PossibleMoves = GetMoves(LastMouseTileIndex);
+        move_array PossibleMoves = GetMoves(&Memory->State, Memory->State.LastMouseTileIndex);
         for (u32 MoveIndex = 0; MoveIndex < PossibleMoves.Count; MoveIndex++)
         {
           u8 TileIndex = PossibleMoves.Moves[MoveIndex].To;
@@ -1157,18 +1226,18 @@ void Render(render_group* RenderGroup, recti ClipRect)
       }
 
       /* TODO(robin): Think about this
-      for (auto x : BoardTiles)
-        Render(x);
-      Render(Alphalayer);
-      for (auto x : PieceBitmaps)
-        Render(x);
-      */
+         for (auto x : BoardTiles)
+         Render(x);
+         Render(Alphalayer);
+         for (auto x : PieceBitmaps)
+         Render(x);
+         */
 
     } break;
 
     case SCENE_HISTORY:
     {
-      PushBoard(RenderGroup, LastBoard, RectWH(MenuRect.Right + 30, 30, 160, 160));
+      PushBoard(RenderGroup, Memory->State.LastBoard, RectWH(MenuRect.Right + 30, 30, 160, 160));
       PushStringCentred(RenderGroup,
           (v2i){MenuRect.Right + (RenderWidth - MenuRect.Right)/2,
           RenderHeight/2.0}, "Some match history stuff", (colour){~0U});
@@ -1179,4 +1248,30 @@ void Render(render_group* RenderGroup, recti ClipRect)
   sprintf(Buffer, "Mouse pos: (%d, %d)", Input.Mouse.X, Input.Mouse.Y);
   PushString(RenderGroup, 0, 0, Buffer, (colour){~0U});
 
+}
+
+void Init(program_memory* Memory)
+{
+  Platform = Memory->Platform;
+
+  Memory->PermArena.Size = Megabytes(512);
+  Memory->PermArena.Base = Memory->Platform.AllocateMemory(Memory->PermArena.Size);
+
+  char FontPath[2048];
+  Memory->GlyphTable = PushArray(&Memory->PermArena, loaded_bitmap, 256);
+  GlyphTable = Memory->GlyphTable;
+  DeserialiseGlyphTable(Memory->GlyphTable,
+      CatStrings(FontPath, 2, Memory->Platform.ExecutableDirectory, "../assets/font.bin"));
+
+  Memory->RenderGroup = PushType(&Memory->PermArena, render_group);
+  Memory->RenderGroup->Size = Megabytes(8);
+  Memory->RenderGroup->Buffer = PushArray(&Memory->PermArena, byte, Memory->RenderGroup->Size);
+
+  Memory->State.MoveHistory.Size = 256;
+  Memory->State.MoveHistory.Moves = PushArray(&Memory->PermArena, move, Memory->State.MoveHistory.Size);
+
+  CopyArray(Memory->State.CurrentBoard, DefaultBoard);
+  CopyArray(Memory->State.LastBoard, DefaultBoard);
+
+  Memory->State.Running = 1;
 }
