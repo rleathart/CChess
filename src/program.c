@@ -24,7 +24,7 @@
 
 #if _WIN64
 
-typedef byte* va_list;
+typedef char* va_list;
 #define PtrAlignedSizeOf(Type) ((sizeof(Type) + sizeof(int*) - 1) & ~(sizeof(int*) - 1))
 #define VAStart(ArgPtr, LastNamedArg) (ArgPtr = (byte*)&LastNamedArg + PtrAlignedSizeOf(LastNamedArg))
 #define VAGet(ArgPtr, Type) (*(Type*)((ArgPtr += PtrAlignedSizeOf(Type)) - PtrAlignedSizeOf(Type)))
