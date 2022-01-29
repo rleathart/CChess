@@ -3,6 +3,14 @@
 #define ArrayCount(Array) (sizeof(Array) / sizeof((Array)[0]))
 // TODO(robin): CopyMemory
 #define CopyArray(Dest, Source) for (u64 i = 0; i < ArrayCount(Source); i++) {(Dest)[i] = (Source)[i];}
+#define CreateMask(Start, End) (-1ULL >> (sizeof(umm) * 8 - 1 - (End) + (Start)) << (Start))
+// NOTE(robin): Used to take the two's compliment of an int that is Size bytes
+#define TwosComplement(Value, Size) ((~(Value) & CreateMask(0, (Size) * 8 - 1)) + 1)
+#define GetBit(Value, Bit) ((Value) & (1 << (Bit)))
+#define SetBit(Value, Bit) ((Value) |= 1 << (Bit))
+#define ClearBit(Value, Bit) ((Value) &= ~(1 << (Bit)))
+#define ToggleBit(Value, Bit) ((Value) ^= 1 << (Bit))
+#define GetBits(Value, Start, End) (((Value) & CreateMask(Start, End)) >> (Start))
 
 #define Kilobytes(Value) ((Value)*1024ULL)
 #define Megabytes(Value) (Kilobytes(Value)*1024ULL)
@@ -12,24 +20,12 @@
 #define global           // NOTE(robin): So we can grep for globals
 #define local static
 #define internal static
-
-#if _WIN64 // TODO(robin): Make this cleaner
-
-typedef char* va_list;
-#define PtrAlignedSizeOf(Type) ((sizeof(Type) + sizeof(int*) - 1) & ~(sizeof(int*) - 1))
-#define VAStart(ArgPtr, LastNamedArg) (ArgPtr = (va_list)&LastNamedArg + PtrAlignedSizeOf(LastNamedArg))
-#define VAGet(ArgPtr, Type) (*(Type*)((ArgPtr += PtrAlignedSizeOf(Type)) - PtrAlignedSizeOf(Type)))
-#define VAEnd(ArgPtr) (ArgPtr = 0)
-
-#else
-
-// NOTE(robin): Difficult to get around including stdarg on mac
-#define VAStart va_start
-#define VAGet va_arg
-#define VAEnd va_end
 #define inline static inline
 
-#endif
+#define PtrAlignedSizeOf(Type) ((sizeof(Type) + sizeof(int*) - 1) & ~(sizeof(int*) - 1))
+#define VAStart(ArgPtr, LastNamedArg) (ArgPtr = (byte*)&LastNamedArg + PtrAlignedSizeOf(LastNamedArg))
+#define VAGet(ArgPtr, Type) (*(Type*)((ArgPtr += PtrAlignedSizeOf(Type)) - PtrAlignedSizeOf(Type)))
+#define VAEnd(ArgPtr) (ArgPtr = 0)
 
 typedef unsigned char u8;
 typedef unsigned short u16;
@@ -41,6 +37,8 @@ typedef signed short s16;
 typedef signed int s32;
 typedef signed long long s64;
 
+typedef float f32;
+typedef double f64;
 typedef u8 byte;
 typedef s32 b32;
 typedef u64 umm;
@@ -332,6 +330,48 @@ global const piece DefaultBoard[] = {
 inline b32 InRect(v2i Coord, recti Quad);
 inline b32 MouseLClickedIn(program_memory*, recti Rect);
 
+inline f64 Abs(f64 x)
+{
+  f64 Result = x < 0 ? -x : x;
+  return Result;
+}
+
+inline f64 PowI(f64 Value, s32 Exponent)
+{
+  f64 Result = Value;
+
+  if (Exponent == 0)
+  {
+    Result = 1;
+  }
+
+  for (s32 i = 0; i < Abs(Exponent); i++)
+  {
+    Result *= Value;
+  }
+
+  if (Exponent < 0)
+  {
+    Result = 1/Result;
+  }
+  return Result;
+}
+
+inline u64 StringLength(char* String)
+{
+  u64 Result = 0;
+  while (*String++)
+    Result++;
+  return Result;
+}
+
+char* CopyString(char* Dest, char* Source)
+{
+  char* Result = Dest;
+  while (*Source) *Dest++ = *Source++;
+  return Result;
+}
+
 internal void*
 CopyMemory(void* DestInit, void* SourceInit, umm Size)
 {
@@ -340,6 +380,225 @@ CopyMemory(void* DestInit, void* SourceInit, umm Size)
   while (Size--) *Dest++ = *Source++;
 
   return(DestInit);
+}
+
+inline u32
+Digits10(umm Value, b32 Signed, u32 Size)
+{
+  u64 PowerOfTen[] = {1, 10, 100, 1000, 10000, 100000, 1000000, 10000000,
+    100000000, 1000000000, 10000000000, 100000000000, 1000000000000};
+
+  b32 Negative = Signed && GetBit(Value, Size * 8 - 1);
+
+  if (Negative)
+  {
+    Value = TwosComplement(Value, Size);
+  }
+
+  u32 Power;
+  for (Power = 1; Power < ArrayCount(PowerOfTen); Power++)
+  {
+    if (Value < PowerOfTen[Power])
+    {
+      return Power;
+    }
+  }
+
+  Power--;
+  return Power + Digits10(Value / PowerOfTen[Power], Signed, Size / 2);
+}
+
+inline char*
+IntString(char* Buffer, umm Value, b32 Signed, u32 Size, u32 Padding)
+{
+  u32 DigitsRequired = Digits10(Value, Signed, Size);
+  DigitsRequired += Padding;
+
+  b32 Negative = Signed && GetBit(Value, Size * 8 - 1);
+
+  if (Negative)
+  {
+    DigitsRequired++;
+    Value = TwosComplement(Value, Size);
+  }
+
+  u64 Quotient = Value;
+  u64 Remainder = 0;
+
+  for (s32 Digit = DigitsRequired - 1; Digit >= 0; Digit--)
+  {
+    if (Digit == 0 && Negative)
+    {
+      Buffer[Digit] = '-';
+    }
+    else if (Digit < Padding)
+    {
+      Buffer[Digit] = '0';
+    }
+    else
+    {
+      Quotient = Value / 10;
+      Remainder = Value % 10;
+      Value = Quotient;
+      Buffer[Digit] = '0' + Remainder;
+    }
+  }
+
+  return Buffer;
+}
+
+inline char*
+S32String(char* Buffer, s32 Value)
+{
+  char* Result = IntString(Buffer, Value, 1, sizeof(Value), 0);
+  return Result;
+}
+
+inline char*
+U32String(char* Buffer, u32 Value)
+{
+  char* Result = IntString(Buffer, Value, 0, sizeof(Value), 0);
+  return Result;
+}
+
+inline char*
+U64String(char* Buffer, u64 Value)
+{
+  char* Result = IntString(Buffer, Value, 0, sizeof(Value), 0);
+  return Result;
+}
+
+inline char*
+S64String(char* Buffer, s64 Value)
+{
+  char* Result = IntString(Buffer, Value, 1, sizeof(Value), 0);
+  return Result;
+}
+
+// Stolen from https://www.geeksforgeeks.org/convert-floating-point-number-string/
+inline void
+F64String(char* Buffer, f64 Value, u32 DecimalPlaces)
+{
+  s32 Offset = 0;
+  if (Value < 0)
+  {
+    Offset++;
+    Buffer[0] = '-';
+    Value = -Value;
+  }
+
+  s64 IntegerPart = Value;
+  f64 FloatPart = Value - (f64)IntegerPart;
+
+  S64String(Buffer + Offset, IntegerPart);
+  int i = Digits10(IntegerPart, 1, sizeof(s64));
+
+  if (DecimalPlaces != 0)
+  {
+    Buffer[i + Offset] = '.';
+    FloatPart = Abs(FloatPart * PowI(10, DecimalPlaces));
+    IntString(Buffer + i + Offset + 1, FloatPart, 0, 8,
+        DecimalPlaces - Digits10((u64)FloatPart, 1, sizeof(u64)));
+  }
+}
+
+char* FormatStringVA(char* Buffer, const char* Format, byte* Args)
+{
+  u32 BufferIndex = 0;
+  b32 LongModifier = 0;
+  while (*Format)
+  {
+    char TempBuffer[1024] = {0};
+    char* ValueBuffer = TempBuffer;
+    if (*Format != '%' && !LongModifier)
+    {
+      Buffer[BufferIndex++] = *Format++;
+    }
+    else
+    {
+      if (!LongModifier)
+        Format++;
+
+      switch (*Format)
+      {
+        case 'l':
+        {
+          LongModifier++;
+        } break;
+
+        case 'c':
+        {
+          char Value = VAGet(Args, char);
+          ValueBuffer[0] = Value;
+          ValueBuffer[1] = 0;
+        } break;
+
+        case 'd':
+        {
+          if (!LongModifier)
+          {
+            s32 Value = VAGet(Args, s32);
+            S32String(ValueBuffer, Value);
+          }
+          else
+          {
+            s64 Value = VAGet(Args, s64);
+            S64String(ValueBuffer, Value);
+          }
+          LongModifier = 0;
+        } break;
+
+        case 'u':
+        {
+          if (!LongModifier)
+          {
+            u32 Value = VAGet(Args, u32);
+            U32String(ValueBuffer, Value);
+          }
+          else
+          {
+            u64 Value = VAGet(Args, u64);
+            U64String(ValueBuffer, Value);
+          }
+          LongModifier = 0;
+        } break;
+
+        case 'f':
+        {
+          f64 Value = VAGet(Args, f64);
+          F64String(ValueBuffer, Value, 6);
+        } break;
+
+        case 's':
+        {
+          ValueBuffer = VAGet(Args, char*);
+        } break;
+      }
+
+      CopyString(Buffer + BufferIndex, ValueBuffer);
+      BufferIndex += StringLength(ValueBuffer);
+
+      Format++;
+    }
+  }
+
+  // NOTE(robin): Null terminate
+  Buffer[BufferIndex] = 0;
+
+  return Buffer;
+}
+
+inline char*
+FormatString(char* Buffer, const char* Format, ...)
+{
+  byte* Args;
+  VAStart(Args, Format);
+
+  FormatStringVA(Buffer, Format, Args);
+
+  VAEnd(Args);
+
+  return Buffer;
 }
 
 #define PushType(Arena, Type) (Type*)PushSize(Arena, sizeof(Type))
@@ -355,6 +614,19 @@ PushSize(memory_arena* Arena, umm Size)
   Arena->Used += Size;
 
   return Result;
+}
+
+inline void
+BoardIndexToFAN(char* FANString, u32 Value)
+{
+  char Ranks[] = {'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'};
+  char Files[] = {'1', '2', '3', '4', '5', '6', '7', '8'};
+
+  u32 Rank = Value % 8;
+  u32 File = 7 - Value / 8;
+
+  FANString[0] = Ranks[Rank];
+  FANString[1] = Files[File];
 }
 
 internal render_group*
@@ -550,6 +822,21 @@ PushStringCentred(render_group* RenderGroup, v2i Position, char* Text, colour Co
 }
 
 internal void*
+PushFormattedString(render_group* RenderGroup, s32 X, s32 Y, colour Colour, const char* Format, ...)
+{
+  byte* VArgs;
+  VAStart(VArgs, Format);
+
+  char Buffer[2048];
+  FormatStringVA(Buffer, Format, VArgs);
+  void* Result = PushString(RenderGroup, X, Y, Buffer, Colour);
+
+  VAEnd(VArgs);
+
+  return Result;
+}
+
+internal void*
 PushButton(render_group* RenderGroup, recti Rect, char* Text, colour ButtonColour, colour TextColor)
 {
   byte* Result = RenderGroup->Buffer + RenderGroup->Used;
@@ -578,6 +865,12 @@ DoButton(program_memory* Memory, button Button)
   PushButton(RenderGroup, Button.Rect, Button.Text, ButtonColour, TextColour);
 
   return Result;
+}
+
+void PushMove(move_history_array* MoveHistory, move Move)
+{
+  Assert(MoveHistory->Count + 1 <= MoveHistory->Size);
+  MoveHistory->Moves[MoveHistory->Count++] = Move;
 }
 
 void SerialiseGlyphTable(char* Filename)
@@ -624,19 +917,11 @@ void DeserialiseGlyphTable(loaded_bitmap* GlyphTable, char* Filename)
   }
 }
 
-inline u64 StringLength(char* String)
-{
-  u64 Result = 0;
-  while (*String++)
-    Result++;
-  return Result;
-}
-
 char* CatStrings(char* Dest, s32 Count, ...)
 {
   char* Result = Dest;
 
-  va_list VArgs;
+  byte* VArgs;
   VAStart(VArgs, Count);
 
   while (Count--)
@@ -751,149 +1036,152 @@ move_array GetMoves(program_state* State, u8 TileIndex)
 
   piece SourcePiece = State->MousePiece;
 
-  // TODO(robin): en passant and check
-  switch (SourcePiece)
+  if (State->WhiteToMove == IsWhite(SourcePiece))
   {
-    case PAWN_B:
-    case PAWN_W:
+    // TODO(robin): en passant and check
+    switch (SourcePiece)
     {
-      b32 White = SourcePiece == PAWN_W;
-      s32 DirectionModifier = White ? -1 : 1;
-      s32 DoubleMoveFile = White ? 6 : 1;
-
-      u8 Tile1Ahead = TileIndex + DirectionModifier * 8;
-      u8 Tile2Ahead = TileIndex + DirectionModifier * 16;
-
-      b32 CanMove1Square = State->CurrentBoard[Tile1Ahead] == NONE;
-      b32 CanMove2Squares = CanMove1Square && File == DoubleMoveFile && State->CurrentBoard[Tile2Ahead] == NONE;
-
-      if (CanMove1Square)
+      case PAWN_B:
+      case PAWN_W:
       {
-        if (!IsSelfCapture(State, TileIndex, Tile1Ahead))
-          Result.Moves[Result.Count++] = (move){TileIndex, Tile1Ahead};
-      }
+        b32 White = SourcePiece == PAWN_W;
+        s32 DirectionModifier = White ? -1 : 1;
+        s32 DoubleMoveFile = White ? 6 : 1;
 
-      if (CanMove2Squares)
-      {
-        if (!IsSelfCapture(State, TileIndex, Tile2Ahead))
-          Result.Moves[Result.Count++] = (move){TileIndex, Tile2Ahead};
-      }
+        u8 Tile1Ahead = TileIndex + DirectionModifier * 8;
+        u8 Tile2Ahead = TileIndex + DirectionModifier * 16;
 
-      s32 Diagonals[] = {15, 17};
-      for (s32 i = 0; i < ArrayCount(Diagonals); i++)
-      {
-        u8 TargetIndex88 = TileIndex88 + DirectionModifier * Diagonals[i];
-        if (!(TargetIndex88 & 0x88))
+        b32 CanMove1Square = State->CurrentBoard[Tile1Ahead] == NONE;
+        b32 CanMove2Squares = CanMove1Square && File == DoubleMoveFile && State->CurrentBoard[Tile2Ahead] == NONE;
+
+        if (CanMove1Square)
         {
-          u8 TargetIndex = Pos64(TargetIndex88);
-          b32 CanCapture = State->CurrentBoard[TargetIndex] && !IsSelfCapture(State, TileIndex, TargetIndex);
+          if (!IsSelfCapture(State, TileIndex, Tile1Ahead))
+            Result.Moves[Result.Count++] = (move){TileIndex, Tile1Ahead};
+        }
 
-          if (CanCapture)
+        if (CanMove2Squares)
+        {
+          if (!IsSelfCapture(State, TileIndex, Tile2Ahead))
+            Result.Moves[Result.Count++] = (move){TileIndex, Tile2Ahead};
+        }
+
+        s32 Diagonals[] = {15, 17};
+        for (s32 i = 0; i < ArrayCount(Diagonals); i++)
+        {
+          u8 TargetIndex88 = TileIndex88 + DirectionModifier * Diagonals[i];
+          if (!(TargetIndex88 & 0x88))
           {
+            u8 TargetIndex = Pos64(TargetIndex88);
+            b32 CanCapture = State->CurrentBoard[TargetIndex] && !IsSelfCapture(State, TileIndex, TargetIndex);
+
+            if (CanCapture)
+            {
+              Result.Moves[Result.Count++] = (move){TileIndex, TargetIndex};
+            }
+          }
+        }
+
+      } break;
+
+      case NITE_B:
+      case NITE_W:
+      {
+        // NOTE(robin): We use the 0x88 offsets here to check for off-board wrapping
+        s32 MoveOffsets[] = {14, 18, -14, -18, 33, 31, -33, -31};
+        for (s32 i = 0; i < 8; i++)
+        {
+          u8 TargetIndex88 = TileIndex88 + MoveOffsets[i];
+
+          if (!(TargetIndex88 & 0x88))
+          {
+            u8 TargetIndex = Pos64(TargetIndex88);
+            if (!IsSelfCapture(State, TileIndex, TargetIndex))
+              Result.Moves[Result.Count++] = (move){TileIndex, TargetIndex};
+          }
+        }
+      } break;
+
+      // NOTE(robin): Sliding moves (no castling)
+      case BISH_B:
+      case BISH_W:
+      case ROOK_B:
+      case ROOK_W:
+      case QUEN_B:
+      case QUEN_W:
+      case KING_B:
+      case KING_W:
+      {
+        s32 SlideOffset[] = {-16, 16, -1, 1, 17, 15, -17, -15};
+
+        s32 Start = 0, End = 8;
+
+        switch (SourcePiece)
+        {
+          case BISH_B:
+          case BISH_W:
+          {
+            Start = 4;
+          } break;
+
+          case ROOK_B:
+          case ROOK_W:
+          {
+            End = 4;
+          } break;
+        }
+
+        for (s32 i = Start; i < End; i++)
+        {
+          u8 TargetIndex88 = TileIndex88 + SlideOffset[i];
+          while (!(TargetIndex88 & 0x88))
+          {
+            u8 TargetIndex = Pos64(TargetIndex88);
+            if (!IsSelfCapture(State, TileIndex, TargetIndex))
+              Result.Moves[Result.Count++] = (move){TileIndex, TargetIndex};
+
+            if (State->CurrentBoard[TargetIndex])
+              break; // NOTE(robin): Moving to this tile will take a piece so we stop
+
+            TargetIndex88 += SlideOffset[i];
+
+            if (SourcePiece == KING_B || SourcePiece == KING_W)
+              break; // NOTE(robin): King can only move one square
+          }
+        }
+
+      } break;
+    }
+
+    // NOTE(robin): Castling
+    if (SourcePiece == KING_B || SourcePiece == KING_W)
+    {
+      b32 White = IsWhite(SourcePiece);
+      for (s32 KingSide = 0; KingSide < 2; KingSide++)
+      {
+        b32 CastleInCorner =
+          State->CurrentBoard[KingSide ? White ? 63 : 7 : White ? 56 : 0] == (White ? ROOK_W : ROOK_B);
+
+        if (State->CanCastle[White + 2 * KingSide] && CastleInCorner)
+        {
+          b32 CastleIsValid = 1;
+          s32 DirectionModifier = KingSide ? 1 : -1;
+          for (s32 i = 1; i < (KingSide ? 3 : 4); i++)
+          {
+            s32 TargetIndex = TileIndex + DirectionModifier * i;
+
+            if (State->CurrentBoard[TargetIndex] != NONE)
+              CastleIsValid = 0;
+          }
+
+          if (CastleIsValid)
+          {
+            u8 TargetIndex = TileIndex + DirectionModifier * 2;
             Result.Moves[Result.Count++] = (move){TileIndex, TargetIndex};
           }
         }
+
       }
-
-    } break;
-
-    case NITE_B:
-    case NITE_W:
-    {
-      // NOTE(robin): We use the 0x88 offsets here to check for off-board wrapping
-      s32 MoveOffsets[] = {14, 18, -14, -18, 33, 31, -33, -31};
-      for (s32 i = 0; i < 8; i++)
-      {
-        u8 TargetIndex88 = TileIndex88 + MoveOffsets[i];
-
-        if (!(TargetIndex88 & 0x88))
-        {
-          u8 TargetIndex = Pos64(TargetIndex88);
-          if (!IsSelfCapture(State, TileIndex, TargetIndex))
-            Result.Moves[Result.Count++] = (move){TileIndex, TargetIndex};
-        }
-      }
-    } break;
-
-    // NOTE(robin): Sliding moves (no castling)
-    case BISH_B:
-    case BISH_W:
-    case ROOK_B:
-    case ROOK_W:
-    case QUEN_B:
-    case QUEN_W:
-    case KING_B:
-    case KING_W:
-    {
-      s32 SlideOffset[] = {-16, 16, -1, 1, 17, 15, -17, -15};
-
-      s32 Start = 0, End = 8;
-
-      switch (SourcePiece)
-      {
-        case BISH_B:
-        case BISH_W:
-        {
-          Start = 4;
-        } break;
-
-        case ROOK_B:
-        case ROOK_W:
-        {
-          End = 4;
-        } break;
-      }
-
-      for (s32 i = Start; i < End; i++)
-      {
-        u8 TargetIndex88 = TileIndex88 + SlideOffset[i];
-        while (!(TargetIndex88 & 0x88))
-        {
-          u8 TargetIndex = Pos64(TargetIndex88);
-          if (!IsSelfCapture(State, TileIndex, TargetIndex))
-            Result.Moves[Result.Count++] = (move){TileIndex, TargetIndex};
-
-          if (State->CurrentBoard[TargetIndex])
-            break; // NOTE(robin): Moving to this tile will take a piece so we stop
-
-          TargetIndex88 += SlideOffset[i];
-
-          if (SourcePiece == KING_B || SourcePiece == KING_W)
-            break; // NOTE(robin): King can only move one square
-        }
-      }
-
-    } break;
-  }
-
-  // NOTE(robin): Castling
-  if (SourcePiece == KING_B || SourcePiece == KING_W)
-  {
-    b32 White = IsWhite(SourcePiece);
-    for (s32 KingSide = 0; KingSide < 2; KingSide++)
-    {
-      b32 CastleInCorner =
-        State->CurrentBoard[KingSide ? White ? 63 : 7 : White ? 56 : 0] == (White ? ROOK_W : ROOK_B);
-
-      if (State->CanCastle[White + 2 * KingSide] && CastleInCorner)
-      {
-        b32 CastleIsValid = 1;
-        s32 DirectionModifier = KingSide ? 1 : -1;
-        for (s32 i = 1; i < (KingSide ? 3 : 4); i++)
-        {
-          s32 TargetIndex = TileIndex + DirectionModifier * i;
-
-          if (State->CurrentBoard[TargetIndex] != NONE)
-            CastleIsValid = 0;
-        }
-
-        if (CastleIsValid)
-        {
-          u8 TargetIndex = TileIndex + DirectionModifier * 2;
-          Result.Moves[Result.Count++] = (move){TileIndex, TargetIndex};
-        }
-      }
-
     }
   }
 
@@ -979,6 +1267,34 @@ b32 MoveMade(piece LastBoard[64], piece CurrentBoard[64])
   return Result;
 }
 
+move MoveFromBoardDelta(piece LastBoard[64], piece CurrentBoard[64])
+{
+  move Result = {0};
+
+  s32 TileIndices[2] = {0};
+  s32 TileIndex = 0;
+  for (u32 i = 0; i < 64; i++)
+  {
+    if (LastBoard[i] != CurrentBoard[i])
+    {
+      TileIndices[TileIndex++] = i;
+    }
+  }
+
+  if (CurrentBoard[TileIndices[0]])
+  {
+    Result.To = TileIndices[0];
+    Result.From = TileIndices[1];
+  }
+  else
+  {
+    Result.From = TileIndices[0];
+    Result.To = TileIndices[1];
+  }
+
+  return Result;
+}
+
 void Update(program_memory* Memory)
 {
   // NOTE(robin): Don't update boards if we're holding a piece
@@ -1045,6 +1361,9 @@ void Update(program_memory* Memory)
 
     if (MoveMade(Memory->State.LastBoard, Memory->State.CurrentBoard))
     {
+      move Move = MoveFromBoardDelta(Memory->State.LastBoard, Memory->State.CurrentBoard);
+      Memory->State.WhiteToMove = !Memory->State.WhiteToMove;
+      PushMove(&Memory->State.MoveHistory, Move);
     }
 
     CopyArray(Memory->State.LastBoard, Memory->State.CurrentBoard);
@@ -1199,23 +1518,28 @@ void Render(program_memory* Memory, recti ClipRect)
           MoveHistoryRect.Left, MoveHistoryRect.Bottom - 100, MoveHistoryRect.Right, MoveHistoryRect.Bottom,
           }, (colour){0xFFFFFFFF});
 
+      s32 CurrentMoveY = MoveHistoryRect.Top + 100;
+      for (u32 MoveIndex = 0; MoveIndex < Memory->State.MoveHistory.Count; MoveIndex++)
+      {
+        move Move = Memory->State.MoveHistory.Moves[MoveIndex];
+        char MoveText[5] = {0};
+        BoardIndexToFAN(MoveText, Move.From);
+        BoardIndexToFAN(&MoveText[2], Move.To);
+        recti TextBounds = TextRect(MoveText);
+        s32 X = (MoveIndex & 1) ? MoveHistoryRect.Right - TextBounds.Right : MoveHistoryRect.Left;
+        PushString(RenderGroup, X, CurrentMoveY, MoveText, (colour){~0U});
+
+        if (MoveIndex & 1)
+          CurrentMoveY += TextBounds.Bottom;
+      }
+
       // }}}
 
       // NOTE(robin): The texture lags the cursor a bit because the window callback is not called every frame.
 
       if (Memory->State.MousePiece) // NOTE(robin): We're holding a piece with the mouse
       {
-        // NOTE(robin): Draw the piece bitmap over the cursor
-        recti BitmapRect = {
-          Memory->Input.Mouse.X - TileSize/2 + TileMargin,
-          Memory->Input.Mouse.Y - TileSize/2 + TileMargin,
-          Memory->Input.Mouse.X + TileSize/2 - TileMargin,
-          Memory->Input.Mouse.Y + TileSize/2 - TileMargin,
-        };
-
-        PushBitmap(RenderGroup, &PieceBitmap[Memory->State.MousePiece], BitmapRect, (colour){~0U});
-
-        // NOTE(robin): Also highlight the possible moves in red
+        // NOTE(robin): Highlight the possible moves in red
         move_array PossibleMoves = GetMoves(&Memory->State, Memory->State.LastMouseTileIndex);
         for (u32 MoveIndex = 0; MoveIndex < PossibleMoves.Count; MoveIndex++)
         {
@@ -1230,6 +1554,16 @@ void Render(program_memory* Memory, recti ClipRect)
           };
           PushRect(RenderGroup, Tile, (colour){0x7FCC0000});
         }
+
+        // NOTE(robin): Draw the piece bitmap over the cursor
+        recti BitmapRect = {
+          Memory->Input.Mouse.X - TileSize/2 + TileMargin,
+          Memory->Input.Mouse.Y - TileSize/2 + TileMargin,
+          Memory->Input.Mouse.X + TileSize/2 - TileMargin,
+          Memory->Input.Mouse.Y + TileSize/2 - TileMargin,
+        };
+
+        PushBitmap(RenderGroup, &PieceBitmap[Memory->State.MousePiece], BitmapRect, (colour){~0U});
       }
 
       /* TODO(robin): Think about this
@@ -1270,6 +1604,7 @@ void Init(program_memory* Memory)
   Memory->RenderGroup->Size = Megabytes(8);
   Memory->RenderGroup->Buffer = PushArray(&Memory->PermArena, byte, Memory->RenderGroup->Size);
 
+  Memory->State.WhiteToMove = 1;
   Memory->State.MoveHistory.Size = 256;
   Memory->State.MoveHistory.Moves = PushArray(&Memory->PermArena, move, Memory->State.MoveHistory.Size);
 
