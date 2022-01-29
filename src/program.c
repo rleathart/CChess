@@ -22,10 +22,23 @@
 #define internal static
 #define inline static inline
 
+#if _WIN64
+
+typedef byte* va_list;
 #define PtrAlignedSizeOf(Type) ((sizeof(Type) + sizeof(int*) - 1) & ~(sizeof(int*) - 1))
 #define VAStart(ArgPtr, LastNamedArg) (ArgPtr = (byte*)&LastNamedArg + PtrAlignedSizeOf(LastNamedArg))
 #define VAGet(ArgPtr, Type) (*(Type*)((ArgPtr += PtrAlignedSizeOf(Type)) - PtrAlignedSizeOf(Type)))
 #define VAEnd(ArgPtr) (ArgPtr = 0)
+
+#else
+
+// TODO(robin): Figure out what va_start does on mac
+#include <stdarg.h>
+#define VAStart va_start
+#define VAGet va_arg
+#define VAEnd va_end
+
+#endif
 
 typedef unsigned char u8;
 typedef unsigned short u16;
@@ -502,7 +515,7 @@ F64String(char* Buffer, f64 Value, u32 DecimalPlaces)
   }
 }
 
-char* FormatStringVA(char* Buffer, const char* Format, byte* Args)
+char* FormatStringVA(char* Buffer, const char* Format, va_list Args)
 {
   u32 BufferIndex = 0;
   b32 LongModifier = 0;
@@ -528,7 +541,7 @@ char* FormatStringVA(char* Buffer, const char* Format, byte* Args)
 
         case 'c':
         {
-          char Value = VAGet(Args, char);
+          char Value = VAGet(Args, int);
           ValueBuffer[0] = Value;
           ValueBuffer[1] = 0;
         } break;
@@ -591,7 +604,7 @@ char* FormatStringVA(char* Buffer, const char* Format, byte* Args)
 inline char*
 FormatString(char* Buffer, const char* Format, ...)
 {
-  byte* Args;
+  va_list Args;
   VAStart(Args, Format);
 
   FormatStringVA(Buffer, Format, Args);
@@ -824,7 +837,7 @@ PushStringCentred(render_group* RenderGroup, v2i Position, char* Text, colour Co
 internal void*
 PushFormattedString(render_group* RenderGroup, s32 X, s32 Y, colour Colour, const char* Format, ...)
 {
-  byte* VArgs;
+  va_list VArgs;
   VAStart(VArgs, Format);
 
   char Buffer[2048];
@@ -921,7 +934,7 @@ char* CatStrings(char* Dest, s32 Count, ...)
 {
   char* Result = Dest;
 
-  byte* VArgs;
+  va_list VArgs;
   VAStart(VArgs, Count);
 
   while (Count--)
