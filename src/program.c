@@ -1741,24 +1741,4 @@ void Init(program_memory* Memory)
     Memory->State.CanCastle[i] = 1;
 
   Memory->State.Running = 1;
-
-  for (u32 _ = 0; _ < 4; _++)
-  {
-    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x00), Pos64(0x10)});
-    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x00), Pos64(0x10)});
-    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x01), Pos64(0x11)});
-    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x01), Pos64(0x11)});
-    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x02), Pos64(0x12)});
-    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x02), Pos64(0x12)});
-    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x03), Pos64(0x13)});
-    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x03), Pos64(0x13)});
-    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x04), Pos64(0x14)});
-    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x04), Pos64(0x14)});
-    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x05), Pos64(0x15)});
-    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x05), Pos64(0x15)});
-    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x06), Pos64(0x16)});
-    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x06), Pos64(0x16)});
-    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x07), Pos64(0x17)});
-    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x07), Pos64(0x17)});
-  }
 }
