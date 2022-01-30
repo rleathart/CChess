@@ -164,6 +164,8 @@ typedef struct
     b32 LButtonDown : 1;
     b32 RButtonDown : 1;
     b32 MButtonDown : 1;
+    b32 RotatedUp : 1;
+    b32 RotatedDown : 1;
   } Mouse;
 } program_input;
 
@@ -266,6 +268,14 @@ typedef struct
 
 typedef struct
 {
+  u32 Size;
+  u32 Count;
+
+  piece (*Boards)[64];
+} board_hisory_array;
+
+typedef struct
+{
   b32 Running;
 
   piece CurrentBoard[64];
@@ -278,6 +288,7 @@ typedef struct
 
   b32 WhiteToMove;
   move_history_array MoveHistory;
+  board_hisory_array BoardHistory;
 } program_state;
 
 typedef entire_file platform_read_entire_file(char*);
@@ -309,6 +320,7 @@ typedef struct
 
   loaded_bitmap* GlyphTable;
   render_group* RenderGroup;
+  u64 FrameCounter;
 } program_memory;
 
 global platform_api Platform;
@@ -1383,6 +1395,18 @@ void Update(program_memory* Memory)
   }
 }
 
+inline f64 Max(f64 X, f64 Y)
+{
+  f64 Result = X > Y ? X : Y;
+  return Result;
+}
+
+inline f64 Min(f64 X, f64 Y)
+{
+  f64 Result = X < Y ? X : Y;
+  return Result;
+}
+
 void Render(program_memory* Memory, recti ClipRect)
 {
   render_group* RenderGroup = Memory->RenderGroup;
@@ -1524,15 +1548,43 @@ void Render(program_memory* Memory, recti ClipRect)
 
       PushRect(RenderGroup, RectBorder(MoveHistoryRect, 5), (colour){0xFF1B1B1B});
       PushRect(RenderGroup, MoveHistoryRect, (colour){0xFF1B1B1B});
-      PushRect(RenderGroup, (recti){
-          MoveHistoryRect.Left, MoveHistoryRect.Top, MoveHistoryRect.Right, MoveHistoryRect.Top + 100
-          }, ColourAdd(ClearColour, 30));
-      PushRect(RenderGroup, (recti){
-          MoveHistoryRect.Left, MoveHistoryRect.Bottom - 100, MoveHistoryRect.Right, MoveHistoryRect.Bottom,
-          }, (colour){0xFFFFFFFF});
 
       s32 CurrentMoveY = MoveHistoryRect.Top + 100;
-      for (u32 MoveIndex = 0; MoveIndex < Memory->State.MoveHistory.Count; MoveIndex++)
+      local s32 StartMoveIndex;
+      local s32 FramesSinceScroll;
+      local s32 LastScrollDirection;
+      local b32 Animating;
+
+      u32 FramesPerScroll = 15;
+
+      if (Memory->Input.Mouse.RotatedDown)
+      {
+        LastScrollDirection = -1;
+      }
+      if (Memory->Input.Mouse.RotatedUp)
+      {
+        LastScrollDirection = 1;
+      }
+
+      if (Memory->Input.Mouse.RotatedUp || Memory->Input.Mouse.RotatedDown)
+      {
+        Animating = 1;
+        FramesSinceScroll = 0;
+      }
+
+      if (FramesSinceScroll == FramesPerScroll + 1)
+      {
+        Animating = 0;
+        StartMoveIndex = Max(0, StartMoveIndex - 2 * LastScrollDirection);
+      }
+
+      if (Animating)
+        CurrentMoveY += LastScrollDirection * Min(FramesPerScroll, FramesSinceScroll) * TextRect("a1a3").Bottom / FramesPerScroll;
+
+      FramesSinceScroll++;
+
+      u32 MaxMovesToDraw = (MoveHistoryRect.Bottom - 100 - (MoveHistoryRect.Top + 100)) / TextRect("a1a3").Bottom * 2;
+      for (u32 MoveIndex = StartMoveIndex; MoveIndex < Memory->State.MoveHistory.Count; MoveIndex++)
       {
         move Move = Memory->State.MoveHistory.Moves[MoveIndex];
         char MoveText[5] = {0};
@@ -1544,7 +1596,17 @@ void Render(program_memory* Memory, recti ClipRect)
 
         if (MoveIndex & 1)
           CurrentMoveY += TextBounds.Bottom;
+
+        if (MoveIndex - StartMoveIndex > MaxMovesToDraw)
+          break;
       }
+
+      PushRect(RenderGroup, (recti){
+          MoveHistoryRect.Left, MoveHistoryRect.Top, MoveHistoryRect.Right, MoveHistoryRect.Top + 100
+          }, ColourAdd(ClearColour, 30));
+      PushRect(RenderGroup, (recti){
+          MoveHistoryRect.Left, MoveHistoryRect.Bottom - 100, MoveHistoryRect.Right, MoveHistoryRect.Bottom,
+          }, (colour){0xFFFFFFFF});
 
       // }}}
 
@@ -1579,14 +1641,6 @@ void Render(program_memory* Memory, recti ClipRect)
         PushBitmap(RenderGroup, &PieceBitmap[Memory->State.MousePiece], BitmapRect, (colour){~0U});
       }
 
-      /* TODO(robin): Think about this
-         for (auto x : BoardTiles)
-         Render(x);
-         Render(Alphalayer);
-         for (auto x : PieceBitmaps)
-         Render(x);
-         */
-
     } break;
 
     case SCENE_HISTORY:
@@ -1597,6 +1651,8 @@ void Render(program_memory* Memory, recti ClipRect)
           RenderHeight/2.0}, "Some match history stuff", (colour){~0U});
     } break;
   }
+
+  Memory->FrameCounter++;
 
 }
 
@@ -1620,6 +1676,8 @@ void Init(program_memory* Memory)
   Memory->State.WhiteToMove = 1;
   Memory->State.MoveHistory.Size = 256;
   Memory->State.MoveHistory.Moves = PushArray(&Memory->PermArena, move, Memory->State.MoveHistory.Size);
+  Memory->State.BoardHistory.Size = 256;
+  Memory->State.BoardHistory.Boards = (piece (*)[64])PushArray(&Memory->PermArena, piece, Memory->State.BoardHistory.Size);
 
   CopyArray(Memory->State.CurrentBoard, DefaultBoard);
   CopyArray(Memory->State.LastBoard, DefaultBoard);

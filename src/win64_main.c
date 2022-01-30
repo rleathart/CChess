@@ -340,12 +340,15 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
 
   while (Memory.State.Running)
   {
+    Memory.Input.Mouse.RotatedUp = 0;
+    Memory.Input.Mouse.RotatedDown = 0;
     Memory.LastInput = Memory.Input;
 
     MSG Message;
     while (PeekMessage(&Message, 0, 0, 0, PM_REMOVE))
     {
       LPARAM LParam = Message.lParam;
+      WPARAM WParam = Message.wParam;
 
       switch (Message.message)
       {
@@ -353,6 +356,13 @@ int WinMain(HINSTANCE Instance, HINSTANCE PrevInstance, char* CommandLine, int C
         {
           Memory.Input.Mouse.X = GET_X_LPARAM(LParam);
           Memory.Input.Mouse.Y = GET_Y_LPARAM(LParam);
+        } break;
+        
+        case WM_MOUSEWHEEL:
+        {
+          s16 WheelDist = GetBits(WParam, 16, 31);
+          Memory.Input.Mouse.RotatedUp = WheelDist > 0;
+          Memory.Input.Mouse.RotatedDown = WheelDist < 0;
         } break;
 
         case WM_LBUTTONDOWN:
