@@ -276,6 +276,19 @@ typedef struct
 
 typedef struct
 {
+  v2i Offset;
+  v2i Increment;
+  v2i XClip;
+  v2i YClip;
+
+  // TODO(robin): Do we actually want these?
+  recti ElementSize;
+  v2i Start;
+  v2i End;
+} viewport;
+
+typedef struct
+{
   b32 Running;
 
   piece CurrentBoard[64];
@@ -320,6 +333,7 @@ typedef struct
 
   loaded_bitmap* GlyphTable;
   render_group* RenderGroup;
+  viewport MoveHistoryViewport;
   u64 FrameCounter;
 } program_memory;
 
@@ -354,6 +368,40 @@ global const piece DefaultBoard[] = {
 
 inline b32 InRect(v2i Coord, recti Quad);
 inline b32 MouseLClickedIn(program_memory*, recti Rect);
+
+inline s32
+RectWidth(recti Rect)
+{
+  s32 Result = Rect.Right - Rect.Left;
+  return Result;
+}
+
+inline s32
+RectHeight(recti Rect)
+{
+  s32 Result = Rect.Bottom - Rect.Top;
+  return Result;
+}
+
+inline f64
+Clip(f64 Value, f64 Min, f64 Max)
+{
+  f64 Result = Value > Max ? Max : Value < Min ? Min : Value;
+  return Result;
+}
+
+void ScrollViewport(viewport* Viewport, v2i ScrollCount)
+{
+  Viewport->Offset.X += ScrollCount.X * Viewport->Increment.X;
+  Viewport->Offset.Y += ScrollCount.Y * Viewport->Increment.Y;
+
+  Viewport->Offset.X = Clip(Viewport->Offset.X, Viewport->XClip.E[0], Viewport->XClip.E[1]);
+  Viewport->Offset.Y = Clip(Viewport->Offset.Y, Viewport->YClip.E[0], Viewport->YClip.E[1]);
+
+  v2i LastStart = Viewport->Start;
+  Viewport->Start.Y = Viewport->Offset.Y / Viewport->ElementSize.Bottom;
+  Viewport->End.Y += Viewport->Start.Y - LastStart.Y;
+}
 
 inline f64 Abs(f64 x)
 {
@@ -1491,12 +1539,28 @@ void Render(program_memory* Memory, recti ClipRect)
         .Bottom = YOffset + 8 * TileSize,
       };
 
-      recti MoveHistoryRect =
+      recti MatchInfoRect =
       {
         .Left = BoardRect.Right + 20,
         .Top = BoardRect.Top,
-        .Right = MoveHistoryRect.Left + 220,
+        .Right = MatchInfoRect.Left + 220,
         .Bottom = BoardRect.Bottom,
+      };
+
+      recti TopInfoRect =
+      {
+        .Left = MatchInfoRect.Left,
+        .Top = MatchInfoRect.Top,
+        .Right = MatchInfoRect.Right,
+        .Bottom = MatchInfoRect.Top + 100,
+      };
+
+      recti BottomInfoRect =
+      {
+        .Left = MatchInfoRect.Left,
+        .Top = MatchInfoRect.Bottom - 100,
+        .Right = MatchInfoRect.Right,
+        .Bottom = MatchInfoRect.Bottom,
       };
 
       // NOTE(robin): Put the staged piece back if we release the mouse outside the board
@@ -1546,67 +1610,59 @@ void Render(program_memory* Memory, recti ClipRect)
 
       // {{{ NOTE(robin): Draw the move history panel
 
-      PushRect(RenderGroup, RectBorder(MoveHistoryRect, 5), (colour){0xFF1B1B1B});
-      PushRect(RenderGroup, MoveHistoryRect, (colour){0xFF1B1B1B});
+      PushRect(RenderGroup, RectBorder(MatchInfoRect, 5), (colour){0xFF1B1B1B});
+      PushRect(RenderGroup, MatchInfoRect, (colour){0xFF1B1B1B});
 
-      s32 CurrentMoveY = MoveHistoryRect.Top + 100;
-      local s32 StartMoveIndex;
-      local s32 FramesSinceScroll;
-      local s32 LastScrollDirection;
-      local b32 Animating;
+      recti MoveHistoryRect = {
+        .Left = MatchInfoRect.Left,
+        .Right = MatchInfoRect.Right,
+        .Top = TopInfoRect.Bottom,
+        .Bottom = BottomInfoRect.Top,
+      };
 
-      u32 FramesPerScroll = 15;
+      recti TextBounds = TextRect("a1a3");
+      // NOTE(robin): +1 because we are masking off an extra row of moves
+      u32 MaxTurnsToDraw = 1 + RectHeight(MoveHistoryRect) / TextBounds.Bottom;
+      u32 TurnIndexOffset = (Memory->State.MoveHistory.Count & 1) ? 1 : 0;
+      v2i ScrollCount = {
+        .Y = Memory->Input.Mouse.RotatedDown ? 1 : Memory->Input.Mouse.RotatedUp ? -1 : 0
+      };
 
-      if (Memory->Input.Mouse.RotatedDown)
+      viewport* Viewport = &Memory->MoveHistoryViewport;
+      Viewport->Increment.Y = 10;
+      Viewport->YClip = (v2i){
+        0,
+          0.5 * TextBounds.Bottom * ((Memory->State.MoveHistory.Count - 2) + TurnIndexOffset),
+      };
+      Viewport->ElementSize = TextBounds;
+      Viewport->Start.Y = 0;
+      Viewport->End.Y = MaxTurnsToDraw;
+
+      ScrollViewport(Viewport, ScrollCount);
+
+      s32 StartTurnIndex = Viewport->Start.Y;
+      s32 EndTurnIndex = Min(Memory->State.MoveHistory.Count / 2 + TurnIndexOffset, Viewport->End.Y);
+      for (u32 TurnIndex = StartTurnIndex; TurnIndex < EndTurnIndex; TurnIndex++)
       {
-        LastScrollDirection = -1;
-      }
-      if (Memory->Input.Mouse.RotatedUp)
-      {
-        LastScrollDirection = 1;
-      }
+        for (u32 i = 0; i < 2; i++)
+        {
+          if (TurnIndex * 2 + i < Memory->State.MoveHistory.Count)
+          {
+            move Move = Memory->State.MoveHistory.Moves[TurnIndex * 2 + i];
+            char MoveText[5] = {0};
+            BoardIndexToFAN(MoveText, Move.From);
+            BoardIndexToFAN(&MoveText[2], Move.To);
+            recti TextBounds = TextRect(MoveText);
+            s32 X = i == 0 ? MatchInfoRect.Left : MatchInfoRect.Right - TextBounds.Right;
+            s32 Y = MoveHistoryRect.Top + (TextBounds.Bottom * (TurnIndex - StartTurnIndex)) - (Viewport->Offset.Y % TextBounds.Bottom);
 
-      if (Memory->Input.Mouse.RotatedUp || Memory->Input.Mouse.RotatedDown)
-      {
-        Animating = 1;
-        FramesSinceScroll = 0;
-      }
-
-      if (FramesSinceScroll == FramesPerScroll + 1)
-      {
-        Animating = 0;
-        StartMoveIndex = Max(0, StartMoveIndex - 2 * LastScrollDirection);
-      }
-
-      if (Animating)
-        CurrentMoveY += LastScrollDirection * Min(FramesPerScroll, FramesSinceScroll) * TextRect("a1a3").Bottom / FramesPerScroll;
-
-      FramesSinceScroll++;
-
-      u32 MaxMovesToDraw = (MoveHistoryRect.Bottom - 100 - (MoveHistoryRect.Top + 100)) / TextRect("a1a3").Bottom * 2;
-      for (u32 MoveIndex = StartMoveIndex; MoveIndex < Memory->State.MoveHistory.Count; MoveIndex++)
-      {
-        move Move = Memory->State.MoveHistory.Moves[MoveIndex];
-        char MoveText[5] = {0};
-        BoardIndexToFAN(MoveText, Move.From);
-        BoardIndexToFAN(&MoveText[2], Move.To);
-        recti TextBounds = TextRect(MoveText);
-        s32 X = (MoveIndex & 1) ? MoveHistoryRect.Right - TextBounds.Right : MoveHistoryRect.Left;
-        PushString(RenderGroup, X, CurrentMoveY, MoveText, (colour){~0U});
-
-        if (MoveIndex & 1)
-          CurrentMoveY += TextBounds.Bottom;
-
-        if (MoveIndex - StartMoveIndex > MaxMovesToDraw)
-          break;
+            PushString(RenderGroup, X, Y, MoveText, (colour){~0U});
+          }
+        }
       }
 
-      PushRect(RenderGroup, (recti){
-          MoveHistoryRect.Left, MoveHistoryRect.Top, MoveHistoryRect.Right, MoveHistoryRect.Top + 100
-          }, ColourAdd(ClearColour, 30));
-      PushRect(RenderGroup, (recti){
-          MoveHistoryRect.Left, MoveHistoryRect.Bottom - 100, MoveHistoryRect.Right, MoveHistoryRect.Bottom,
-          }, (colour){0xFFFFFFFF});
+      PushRect(RenderGroup, TopInfoRect, ColourAdd(ClearColour, 30));
+      PushRect(RenderGroup, BottomInfoRect, (colour){0xFFFFFFFF});
 
       // }}}
 
@@ -1685,4 +1741,24 @@ void Init(program_memory* Memory)
     Memory->State.CanCastle[i] = 1;
 
   Memory->State.Running = 1;
+
+  for (u32 _ = 0; _ < 4; _++)
+  {
+    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x00), Pos64(0x10)});
+    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x00), Pos64(0x10)});
+    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x01), Pos64(0x11)});
+    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x01), Pos64(0x11)});
+    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x02), Pos64(0x12)});
+    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x02), Pos64(0x12)});
+    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x03), Pos64(0x13)});
+    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x03), Pos64(0x13)});
+    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x04), Pos64(0x14)});
+    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x04), Pos64(0x14)});
+    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x05), Pos64(0x15)});
+    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x05), Pos64(0x15)});
+    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x06), Pos64(0x16)});
+    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x06), Pos64(0x16)});
+    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x07), Pos64(0x17)});
+    PushMove(&Memory->State.MoveHistory, (move){Pos64(0x07), Pos64(0x17)});
+  }
 }
