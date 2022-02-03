@@ -11,7 +11,7 @@ if [ $(uname) == "Linux" ]; then
   -lGL
   "
 else
-  MainSource="../src/max_main.m"
+  MainSource="../src/mac_main.m"
   MainExe="mac_main"
   MacCompilerFlags="
   -framework AppKit
