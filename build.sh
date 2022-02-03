@@ -3,23 +3,35 @@
 mkdir build 2> /dev/null
 pushd build > /dev/null
 
+if [ $(uname) == "Linux" ]; then
+  MainSource="../src/linux_x11_main.c"
+  MainExe="linux_x11_main"
+  LinuxCompilerFlags="
+  -lX11
+  -lGL
+  "
+else
+  MainSource="../src/max_main.m"
+  MainExe="mac_main"
+  MacCompilerFlags="
+  -framework AppKit
+  -framework OpenGL
+  "
+fi
+
 CommonCompilerFlags="
--MJ compile_commands.json
+-g
 -fdiagnostics-absolute-paths
 -Wno-deprecated-declarations
 -Wno-microsoft-anon-tag
 -Wno-switch
 -fms-extensions
--framework AppKit
--framework OpenGL
 "
 
-clang -g $CommonCompilerFlags ../src/mac_main.m -o mac_main
+clang -g $LinuxCompilerFlags $MacCompilerFlags \
+  $CommonCompilerFlags $MainSource -o $MainExe
 
 ErrorCode=$?
-
-# clang output needs to be wrapped in []
-echo '['$'\n'"$(cat compile_commands.json)"$'\n'']' > compile_commands.json
 
 popd > /dev/null
 
