@@ -90,9 +90,28 @@ int main(int argc, char** argv)
         &MouseEvent.xbutton.y,
         &MouseEvent.xbutton.state);
 
+    Memory.Input.Mouse.RotatedDown = 0;
+    Memory.Input.Mouse.RotatedUp = 0;
     Memory.Input.Mouse.LButtonDown = (MouseEvent.xbutton.state & Button1Mask) ? 1 : 0;
     Memory.Input.Mouse.X = MouseEvent.xbutton.x;
     Memory.Input.Mouse.Y = MouseEvent.xbutton.y;
+
+    while (XEventsQueued(XDisplay, QueuedAfterReading))
+    {
+      XEvent Event;
+      XNextEvent(XDisplay, &Event);
+
+      switch (Event.type)
+      {
+        case ButtonPress:
+        {
+          if (Event.xbutton.button == Button4)
+            Memory.Input.Mouse.RotatedUp = 1;
+          if (Event.xbutton.button == Button5)
+            Memory.Input.Mouse.RotatedDown = 1;
+        } break;
+      }
+    }
 
     XWindowAttributes WindowAttributes = {0};
     XGetWindowAttributes(XDisplay, XWindow, &WindowAttributes);
